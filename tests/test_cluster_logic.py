@@ -10,6 +10,7 @@ import pytest
 
 from ltvm_pkg import deploy, vm_cluster
 from ltvm_pkg.deploy import ENV_SAVE_BEGIN
+from ltvm_pkg.guest_hosts import STOCK_HOSTS
 from ltvm_pkg.vm_state import ClusterInfo, ClusterNode
 from tests.host_marks import needs_gnu_sed
 
@@ -793,6 +794,22 @@ class TestGuestHostsBlock:
         lines = hosts.read_text().splitlines()
         assert lines[0] == "127.0.0.1 localhost"
         assert lines[1].startswith(vm_cluster.GUEST_HOSTS_BEGIN)
+
+    def test_missing_hosts_file(self, tmp_path: Path) -> None:
+        # A debian13 image from before the export wrote one has none.
+        hosts = tmp_path / "hosts"
+        self._write(hosts, vm_cluster.cluster_hosts_block("co2", self.MEMBERS))
+        body = hosts.read_text()
+        assert body.startswith(STOCK_HOSTS)
+        assert "10.0.0.12\tco2-client\n" in body
+
+    def test_empty_hosts_file(self, tmp_path: Path) -> None:
+        hosts = tmp_path / "hosts"
+        hosts.write_text("")
+        self._write(hosts, vm_cluster.cluster_hosts_block("co2", self.MEMBERS))
+        body = hosts.read_text()
+        assert body.startswith(STOCK_HOSTS)
+        assert body.count(vm_cluster.GUEST_HOSTS_BEGIN) == 1
 
 
 class TestClusterJsonOutput:
