@@ -792,23 +792,44 @@ def _unregister_ssh_name_locked(name: str) -> None:
             _chown_to_real_user(backup)
 
 
+# Keys arrive on stdin (one per line); each non-blank line is appended
+# only when not already present, and a file with no trailing newline gets
+# one first so the key does not join its last line.
+_ADD_AUTHORIZED_KEY_SCRIPT = (
+    "umask 077 && "
+    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+    "touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && "
+    'while IFS= read -r key || [ -n "$key" ]; do '
+    'case "$key" in *[![:space:]]*) ;; *) continue ;; esac; '
+    "tr -d '\\r' < ~/.ssh/authorized_keys | grep -qxF -- \"$key\"; rc=$?; "
+    '[ "$rc" -eq 0 ] && continue; '
+    '[ "$rc" -eq 1 ] || exit "$rc"; '
+    "{ [ ! -s ~/.ssh/authorized_keys ] || "
+    '[ -z "$(tail -c 1 ~/.ssh/authorized_keys)" ] || echo; '
+    "printf '%s\\n' \"$key\"; } >> ~/.ssh/authorized_keys || exit 1; "
+    "done"
+)
+
+
 def deploy_ssh_key(ip: str) -> None:
     """Copy the invoking user's SSH public key to the VM."""
     _, ssh_dir = _real_user_ssh_dir()
-    pubkey = None
+    # Pipe the key in via stdin so weird key-file content (embedded quotes,
+    # etc.) can't break shell quoting.  Every start runs this, so append
+    # only lines that are not there yet: a plain `cat >>` added another
+    # copy on each boot.  Skip any empty/whitespace-only key file so a
+    # subsequent id_*.pub is still picked up.
+    lines: list[str] = []
     for f in sorted(ssh_dir.glob("id_*.pub")):
-        pubkey = f
-        break
-    if not pubkey:
+        lines = [line for line in f.read_text().splitlines() if line.strip()]
+        if lines:
+            break
+    if not lines:
         return
-    # Pipe the key in via stdin so weird key-file content (newlines in
-    # comment field, embedded quotes, etc.) can't break shell quoting.
-    key_data = pubkey.read_text().rstrip("\n") + "\n"
+    key_data = "\n".join(lines) + "\n"
     ssh_cmd = sshpass_ssh_argv(
         ip,
-        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-        "cat >> ~/.ssh/authorized_keys && "
-        "chmod 600 ~/.ssh/authorized_keys",
+        _ADD_AUTHORIZED_KEY_SCRIPT,
         extra_opts=["-o", "ConnectTimeout=5"],
     )
     try:
