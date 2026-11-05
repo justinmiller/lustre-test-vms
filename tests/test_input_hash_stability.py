@@ -55,7 +55,7 @@ GOLDEN = [
     ("ubuntu2604-server", "image", None, None, "ac38ec4a8a349041"),
     ("debian13", "container", None, None, "8bc7587fe4a5bc3f"),
     ("debian13", "kernel", None, None, "4b83d73a29d20d07"),
-    ("debian13", "image", None, None, "444af89f54ab9445"),
+    ("debian13", "image", None, None, "c70a7a018b8452e5"),
     ("opensuse156", "container", None, None, "d9f755295c83a19c"),
     ("opensuse156", "kernel", None, None, "930ab71dd34683ef"),
     ("opensuse156", "image", None, None, "90eb267cac4b0d6a"),

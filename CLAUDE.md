@@ -1500,6 +1500,20 @@ holds only an A record for does the same.  With the block, A lookups
 and `getaddrinfo` never reach DNS; a lookup for IPv6 only (`getent
 hosts`) still does.
 
+**The guest's /etc/hosts itself.**  Rocky and SUSE get one from a
+package; on Debian and Ubuntu nothing owns it, and podman bind-mounts
+its own over every RUN, so the debian13 image shipped with none: the
+cluster block's `sed -i` failed, and nothing resolved `localhost`.
+[ltvm_pkg/guest_hosts.py](ltvm_pkg/guest_hosts.py) adds the localhost
+entries at export (`image_build._rootfs_hosts_sh`) and ahead of every
+cluster block, so VMs from older images get them at the next `cluster
+deploy`.  Never `127.0.1.1 <hostname>`: a name that resolves to loopback
+gives LNet a 127.x NID.  A VM's own name comes from nss `myhostname`
+(Rocky's default; `libnss-myhostname` in debian13's packages), not DNS:
+a single-node test run ssh's to `$(hostname)`, and the host's dnsmasq
+may not answer (on a Mac whose application firewall blocks it, it never
+does).
+
 ### Running a suite
 
 `ltvm suite run|status|collect`

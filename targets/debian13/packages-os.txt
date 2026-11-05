@@ -14,3 +14,9 @@ initramfs-tools
 # C++ compiler (rhel ships gcc-c++ in the dev container; some
 # Lustre test programs need a g++ in the VM as well)
 g++
+
+# Resolve the VM's own hostname to its addresses with no DNS and no
+# /etc/hosts line for it, as Rocky's nsswitch "myhostname" does.  The
+# Lustre test framework ssh's and pdsh's to $(hostname); without this a
+# single-node VM depends on the host's dnsmasq answering for its name.
+libnss-myhostname
