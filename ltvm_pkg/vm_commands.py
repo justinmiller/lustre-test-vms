@@ -545,6 +545,27 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
         print(f"warning: kdump reload on '{vm.name}' did not complete: {e}")
 
 
+def find_vmcore_script(crash_dir: str = "/var/crash") -> str:
+    """Shell that prints the newest dump under crash_dir.
+
+    kdump on EL writes `<dir>/vmcore`.  Debian and Ubuntu's kdump-tools
+    write `<stamp>/dump.<stamp>` when makedumpfile succeeds and fall back
+    to a plain cp of /proc/vmcore as `<stamp>/vmcore.<stamp>` when it
+    fails or is missing.  The stamp starts with a digit, so
+    `vmcore.[0-9]*` and `dump.[0-9]*` combined with `! -name '*-incomplete'`
+    leave out EL's vmcore-dmesg.txt, dump.dmesg, and both tools'
+    `*-incomplete` files left behind by interrupted saves.  `-print0` and
+    `xargs -0 -r` handle spaces in paths and avoid GNU xargs running
+    `ls -dt` with no arguments (which prints ".").
+    """
+    return (
+        f"find {shlex.quote(crash_dir)} -maxdepth 3 -type f"
+        r" \( -name 'vmcore' -o -name 'vmcore.[0-9]*' -o -name 'dump.[0-9]*' \)"
+        " ! -name '*-incomplete' -print0"
+        " 2>/dev/null | xargs -0 -r ls -dt -- 2>/dev/null | head -n 1"
+    )
+
+
 def _ago(epoch: int) -> str:
     """Format epoch as relative time (e.g. '2h ago', '3d ago'), or '-'."""
     if not epoch:
@@ -3157,16 +3178,8 @@ def cmd_crash_collect(args: argparse.Namespace) -> int:
     running_build_id = _vm_kernel_build_id(vm)
 
     print("finding vmcore...")
-    # Support both RHEL format (/var/crash/*/vmcore) and
-    # Ubuntu kdump-tools format (/var/crash/<ts>/dump.<ts>)
     try:
-        r = run_ssh(
-            vm.ip,
-            "find /var/crash -maxdepth 3 -type f"
-            r" \( -name 'vmcore' -o -name 'dump.*' \)"
-            " 2>/dev/null | xargs ls -dt 2>/dev/null | head -1",
-            timeout=10,
-        )
+        r = run_ssh(vm.ip, find_vmcore_script(), timeout=10)
     except subprocess.TimeoutExpired as e:
         return _handler_error(
             args,
@@ -3185,7 +3198,7 @@ def cmd_crash_collect(args: argparse.Namespace) -> int:
     if not vmcore_path:
         return _handler_error(args, "no vmcore found in /var/crash/")
 
-    r = run_ssh(vm.ip, f"ls -lh {vmcore_path}", timeout=5)
+    r = run_ssh(vm.ip, f"ls -lh -- {shlex.quote(vmcore_path)}", timeout=5)
     print(f"found: {r.stdout.strip()}")
 
     ts = time.strftime("%Y%m%d-%H%M%S")

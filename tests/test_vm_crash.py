@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -808,3 +809,106 @@ class TestSysrqTriggerError:
         assert bool(err) == failed
         if failed:
             assert f"rc={rc}" in err
+
+
+class TestFindVmcoreScript:
+    """The probe itself, run against a real directory tree."""
+
+    def _newest(self, crash: Path) -> str:
+        r = subprocess.run(
+            ["sh", "-c", vm_commands.find_vmcore_script(str(crash))],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return r.stdout.strip()
+
+    def _dump(self, path: Path, age: int) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"core")
+        t = time.time() - age
+        os.utime(path, (t, t))
+        return path
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "127.0.0.1-2026-11-06-12:00:00/vmcore",
+            "202611061200/dump.202611061200",
+            "202611061200/vmcore.202611061200",
+        ],
+        ids=["el", "kdump-tools-makedumpfile", "kdump-tools-cp-fallback"],
+    )
+    def test_finds_each_distros_dump(self, tmp_path: Path, rel: str) -> None:
+        dump = self._dump(tmp_path / rel, age=100)
+        stamp = dump.parent
+        # What an EL save and a kdump-tools save leave beside the dump,
+        # each newer than it so a wrong match would win.
+        for decoy in (
+            "vmcore-dmesg.txt",
+            "vmcore-incomplete",
+            "vmcore.202611061200-incomplete",
+            "dump.202611061200-incomplete",
+            "dump.dmesg",
+            "dmesg.202611061200",
+        ):
+            self._dump(stamp / decoy, age=10)
+        assert self._newest(tmp_path) == str(dump)
+
+    def test_newest_wins(self, tmp_path: Path) -> None:
+        self._dump(tmp_path / "202611051200/vmcore.202611051200", age=1000)
+        new = self._dump(tmp_path / "202611061200/dump.202611061200", age=10)
+        assert self._newest(tmp_path) == str(new)
+
+    def test_handles_spaces_in_crash_dir(self, tmp_path: Path) -> None:
+        crash = tmp_path / "crash dir"
+        dump = self._dump(crash / "202611061200/vmcore.202611061200", age=10)
+        assert self._newest(crash) == str(dump)
+
+    def test_nothing_found(self, tmp_path: Path) -> None:
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert self._newest(empty) == ""
+        assert self._newest(tmp_path / "missing") == ""
+        self._dump(tmp_path / "202611061200/vmcore-incomplete", age=10)
+        self._dump(
+            tmp_path / "202611061200/vmcore.202611061200-incomplete", age=10
+        )
+        self._dump(
+            tmp_path / "202611061200/dump.202611061200-incomplete", age=10
+        )
+        assert self._newest(tmp_path) == ""
+
+    def test_cmd_crash_collect_quotes_vmcore_path_in_ls(
+        self, tmp_vmdir: Path, tmp_path: Path
+    ) -> None:
+        kdir = tmp_path / "kdir"
+        kdir.mkdir()
+        (kdir / "vmlinux").write_bytes(b"ELF")
+        _seed_vm(tmp_vmdir, "vm1", kernel=str(kdir / "vmlinuz"))
+        spaced = "/var/crash/my dir/vmcore.202611061200"
+        ssh_cmds: list[str] = []
+
+        def fake_ssh(ip: str, cmd: str, **kw) -> MagicMock:
+            ssh_cmds.append(cmd)
+            if cmd.startswith("find "):
+                return MagicMock(returncode=0, stdout=f"{spaced}\n", stderr="")
+            return MagicMock(
+                returncode=0, stdout="-rw-r--r-- 1 root\n", stderr=""
+            )
+
+        def fake_scp(argv: list[str], **kw) -> MagicMock:
+            Path(argv[-1]).write_bytes(b"core")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("ltvm_pkg.vm_commands.is_running", return_value=True),
+            patch("ltvm_pkg.vm_commands.run_ssh", side_effect=fake_ssh),
+            patch("ltvm_pkg.vm_commands.run", side_effect=fake_scp),
+        ):
+            rc = vm_commands.cmd_crash_collect(
+                _args("vm1", outdir=str(tmp_path / "out"))
+            )
+
+        assert rc == EXIT_OK
+        assert f"ls -lh -- '{spaced}'" in ssh_cmds
