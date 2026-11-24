@@ -1357,6 +1357,7 @@ def _build_in_container(
             f"libselinux1-dev:{xinfo.deb_arch} zlib1g-dev:{xinfo.deb_arch} "
             f"libnl-3-dev:{xinfo.deb_arch} libnl-genl-3-dev:{xinfo.deb_arch} "
             f"libaio-dev:{xinfo.deb_arch} libkeyutils-dev:{xinfo.deb_arch} "
+            f"libkrb5-dev:{xinfo.deb_arch} libssl-dev:{xinfo.deb_arch} "
             f"2>&1 | tail -5 && "
             # The WhamCloud e2fsprogs again, as for RHEL.  Debian's
             # cross gcc needs no --sysroot, so the .pc files are pointed

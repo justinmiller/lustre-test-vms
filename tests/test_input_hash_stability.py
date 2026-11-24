@@ -26,21 +26,21 @@ from ltvm_pkg.target_config import TargetConfig
 
 # (target, artifact, kernel, variant, expected)
 GOLDEN = [
-    ("rocky8", "container", None, None, "dfa0fc93d2774ebf"),
-    ("rocky8", "kernel", None, None, "e62e0946be2d3db1"),
-    ("rocky8", "image", None, None, "20f3830d45755dca"),
+    ("rocky8", "container", None, None, "ece909d0d7d05e81"),
+    ("rocky8", "kernel", None, None, "78f55921ba96459a"),
+    ("rocky8", "image", None, None, "f319e458d32e933c"),
     ("rocky9", "container", None, None, "4a58226592cb2cf5"),
     ("rocky9", "kernel", None, None, "7e79d71c25ca6c06"),
     ("rocky9", "image", None, None, "bb702dcf6655beea"),
     ("rocky9-64k", "container", None, None, "9ebe6bff482840f1"),
     ("rocky9-64k", "kernel", None, None, "c3a54e865fb41c3c"),
     ("rocky9-64k", "image", None, None, "d61838204e4e9247"),
-    ("rocky10", "container", None, None, "9f9eabcec78fc131"),
-    ("rocky10", "kernel", None, None, "80994616a7980a26"),
-    ("rocky10", "image", None, None, "9f0534dee7459492"),
-    ("rocky10-16k", "container", None, None, "ee00de82e663a154"),
-    ("rocky10-16k", "kernel", None, None, "ce82ce77e1d5fff3"),
-    ("rocky10-16k", "image", None, None, "22687e8282655abd"),
+    ("rocky10", "container", None, None, "42a53db59774b762"),
+    ("rocky10", "kernel", None, None, "7de2b845e33fbeee"),
+    ("rocky10", "image", None, None, "a9bbfb021e3a367a"),
+    ("rocky10-16k", "container", None, None, "91b258acb367744d"),
+    ("rocky10-16k", "kernel", None, None, "aa757838090b4852"),
+    ("rocky10-16k", "image", None, None, "c7858c83f1ee8384"),
     ("mainline", "container", None, None, "c25d828a438d5e1b"),
     ("mainline", "kernel", None, None, "145fc824ca1285b7"),
     ("mainline", "image", None, None, "b2f7ecfd75c359b9"),
@@ -56,9 +56,9 @@ GOLDEN = [
     ("debian13", "container", None, None, "af05e0d2ca07ac93"),
     ("debian13", "kernel", None, None, "4b83d73a29d20d07"),
     ("debian13", "image", None, None, "fb1353be29c9031b"),
-    ("opensuse156", "container", None, None, "d9f755295c83a19c"),
-    ("opensuse156", "kernel", None, None, "930ab71dd34683ef"),
-    ("opensuse156", "image", None, None, "90eb267cac4b0d6a"),
+    ("opensuse156", "container", None, None, "73c010d825dd9fd9"),
+    ("opensuse156", "kernel", None, None, "a74c30cdb209d311"),
+    ("opensuse156", "image", None, None, "97dbf1ad9c35c663"),
     # A variant must not perturb the base hashes above, and must differ
     # from them.
     ("rocky9", "container", None, "mofed-24", "cc1a03c2d0fda310"),
@@ -135,3 +135,15 @@ def test_shmrdma_sources_skip_mofed_images(monkeypatch) -> None:
     )
     assert before[0] != after[0]
     assert before[1] == after[1]
+
+
+def test_configure_args_excluded_from_artifact_hashes() -> None:
+    """configure_args is only read by lustre_build; changing it must not rebuild kernels."""
+    tc = TargetConfig("rocky9")
+    before = {a: tc.input_hash(a) for a in ("container", "kernel", "image")}
+    tc._data = {
+        **tc._data,
+        "configure_args": ["--enable-gss", "--enable-extra"],
+    }
+    after = {a: tc.input_hash(a) for a in ("container", "kernel", "image")}
+    assert after == before

@@ -230,6 +230,8 @@ class TestCrossBuildScript:
         assert "openssl-devel" in dnf
         assert 'CROSS_CONFIGURE="--with-krb5=/sysroot-aarch64/usr"' in dnf
         apt = script[script.index("elif command -v apt-get") :]
+        assert "libkrb5-dev:arm64" in apt
+        assert "libssl-dev:arm64" in apt
         assert 'CROSS_CONFIGURE=""' in apt
         assert " $CROSS_CONFIGURE" in script[script.index("bash autogen.sh") :]
 
