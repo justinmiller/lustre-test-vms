@@ -45,6 +45,56 @@ if [ -n "${FC_NAME}" ]; then
         hostname "${FC_NAME}"
 fi
 
+# --- Time synchronization (chrony -> host fc_gw) -------------------
+# Point chrony at the host gateway (fc_gw) instead of public NTP pools
+# (unreachable in air-gapped labs, and WAN jitter diverges cluster
+# nodes).  Only runs when fc_gw= was passed on the kernel cmdline (and
+# fc_ntp_port!=0) so standalone/cloud exports and LTVM_TIME_PORT=0 keep
+# their distro chrony config.
+if [ -n "${FC_GW}" ] && command -v chronyd >/dev/null 2>&1; then
+    FC_NTP_PORT=$(tr ' ' '\n' < /proc/cmdline | grep ^fc_ntp_port= \
+        | cut -d= -f2)
+    FC_NTP_ACQPORT=$(tr ' ' '\n' < /proc/cmdline | grep ^fc_ntp_acqport= \
+        | cut -d= -f2)
+    if [ "${FC_NTP_PORT}" != "0" ]; then
+        CHRONY_CONF=/etc/chrony.conf
+        if [ -d /etc/chrony ]; then
+            CHRONY_CONF=/etc/chrony/chrony.conf
+        fi
+        # Load KVM's virtual PTP driver when built as a module (e.g. RHEL 9).
+        modprobe ptp_kvm >/dev/null 2>&1 || true
+        {
+            echo "# Managed by ltvm (rc.local) -- sync guest clock to host (fc_gw)."
+            for _ptp in /sys/class/ptp/ptp*; do
+                if [ -r "${_ptp}/clock_name" ] && [ "$(cat "${_ptp}/clock_name" 2>/dev/null)" = "KVM virtual PTP" ]; then
+                    echo "refclock PHC /dev/${_ptp##*/} poll 2 dpoll -2 offset 0 prefer"
+                    break
+                fi
+            done
+            echo "server ${FC_GW} port ${FC_NTP_PORT:-12300} iburst minpoll 2 maxpoll 4"
+            if [ -n "${FC_NTP_ACQPORT}" ] && [ "$(getenforce 2>/dev/null)" != "Enforcing" ]; then
+                # Fixed unprivileged client source port (macOS hosts only,
+                # skipped under enforcing SELinux): reusing one UDP 4-tuple
+                # avoids macOS socketfilterfw per-poll inspection delay
+                # without hitting SELinux chronyd_t on enforcing guests.
+                echo "acquisitionport ${FC_NTP_ACQPORT}"
+            fi
+            echo "driftfile /var/lib/chrony/drift"
+            echo "makestep 1.0 -1"
+            echo "rtcsync"
+        } > "${CHRONY_CONF}"
+        # Restart whichever unit name this distro ships (chronyd on
+        # RHEL/SUSE, chrony on Debian/Ubuntu).  --no-block avoids any
+        # systemd boot-ordering deadlock while rc-local.service is running.
+        for _unit in chronyd.service chrony.service; do
+            if systemctl cat "${_unit}" >/dev/null 2>&1; then
+                systemctl restart --no-block "${_unit}" 2>/dev/null || true
+                break
+            fi
+        done
+    fi
+fi
+
 # --- Extra NICs (--nic) --------------------------------------------
 # ipv4_network <addr> <prefixlen> -- print the network address.
 ipv4_network() {
