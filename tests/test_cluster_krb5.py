@@ -188,3 +188,31 @@ def test_debian_package_maps_include_krb5_server_and_sssd_kcm(
     ]
     assert ["krb5-server", "krb5-kdc", "krb5-admin-server"] in lines
     assert ["sssd-kcm", "-"] not in lines
+
+
+@pytest.mark.parametrize(
+    ("target", "want_crypto"),
+    [
+        ("rocky8", True),
+        ("rocky9", True),
+        ("rocky9-64k", True),
+        ("rocky10", True),
+        ("rocky10-16k", True),
+        ("debian13", True),
+        ("ubuntu2604-server", True),
+        ("ubuntu2404", False),
+        ("ubuntu2604", False),
+        ("mainline", False),
+    ],
+)
+def test_targets_configure_gss_and_crypto(
+    target: str, want_crypto: bool
+) -> None:
+    from ltvm_pkg.target_config import TargetConfig
+
+    tc = TargetConfig(target)
+    assert "--enable-gss=yes" in tc.configure_args
+    if want_crypto:
+        assert "--enable-crypto=yes" in tc.configure_args
+    else:
+        assert "--enable-crypto=yes" not in tc.configure_args

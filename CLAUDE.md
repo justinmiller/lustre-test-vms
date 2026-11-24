@@ -235,7 +235,12 @@ concatenating them unchanged -- so `input_hash()` (the
 digest) and `input_components()` (the per-input digests
 `--why` diffs, also stored in `meta.json`) come from one
 code path.  Keep it that way: an explanation that disagrees
-with the rebuild decision is worse than none.
+with the rebuild decision is worse than none.  `variants`
+(mixed in per variant), `zfs` (hashed directly by `zfs_build`),
+and `configure_args` (read only by `lustre_build`, which stamps
+the resolved configure flags in its own cache) are excluded from
+the base `targets.yaml` slice so changing them does not rebuild
+containers, kernels, or images.
 
 [tests/test_input_hash_stability.py](tests/test_input_hash_stability.py)
 pins the digest for every target and artifact.  If it fails,
