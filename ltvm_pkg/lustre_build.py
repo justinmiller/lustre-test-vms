@@ -1352,12 +1352,20 @@ def _build_in_container(
             f"> /etc/apt/sources.list.d/{xinfo.deb_arch}-sources.sources; "
             f"fi && "
             f"apt-get update -qq 2>&1 | tail -3 && "
-            f"apt-get install -y "
+            # WhamCloud's build-e2fsprogs.sh installs into /usr in the
+            # build container, overwriting /usr/bin/compile_et (owned by
+            # comerr-dev:<host_arch>).  Without --force-overwrite, dpkg
+            # refuses comerr-dev:<deb_arch> (pulled in by libkrb5-dev) on
+            # that shared path; run under pipefail so a real apt/dpkg
+            # error cannot be hidden behind `| tail -5`.
+            f"( set -o pipefail; apt-get install -y "
+            f'-o Dpkg::Options::="--force-overwrite" '
             f"libmount-dev:{xinfo.deb_arch} libyaml-dev:{xinfo.deb_arch} "
             f"libselinux1-dev:{xinfo.deb_arch} zlib1g-dev:{xinfo.deb_arch} "
             f"libnl-3-dev:{xinfo.deb_arch} libnl-genl-3-dev:{xinfo.deb_arch} "
             f"libaio-dev:{xinfo.deb_arch} libkeyutils-dev:{xinfo.deb_arch} "
-            f"2>&1 | tail -5 && "
+            f"libkrb5-dev:{xinfo.deb_arch} libssl-dev:{xinfo.deb_arch} "
+            f"2>&1 | tail -5 ) && "
             # The WhamCloud e2fsprogs again, as for RHEL.  Debian's
             # cross gcc needs no --sysroot, so the .pc files are pointed
             # at {sysroot} instead of setting PKG_CONFIG_SYSROOT_DIR,
