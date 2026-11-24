@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build and install source-built tools used in VM images:
+# Build and install source-built / prebuilt tools used in VM images:
 #   IOR + mdtest, simul, metabench, iozone, pjdfstest, dbench loadfile,
-#   FlameGraph, drgn
+#   compilebench, vmtouch, cthon04, elbencho, FlameGraph, drgn
 #
 # Expects gcc, make, autoconf, automake, libtool, curl, pip3
 # to already be installed (via the package list install step).
@@ -28,6 +28,10 @@ DBENCH_LOADFILE_REF="${DBENCH_LOADFILE_REF:-a8e1c0fbb8bdb23ee22c0cc2e3f9b1049e53
 VMTOUCH_REF="${VMTOUCH_REF:-af86e27675843b3c7e4ddfee66ddbaf44eff43c4}"
 PJDFSTEST_REF="${PJDFSTEST_REF:-85a8aea9e685999ef0540392fd80535f873d7ff7}"
 FLAMEGRAPH_REF="${FLAMEGRAPH_REF:-41fee1f99f9276008b7cd112fca19dc3ea84ac32}"
+ELBENCHO_DEFAULT_VERSION="3.4-1"
+ELBENCHO_VERSION="${ELBENCHO_VERSION:-$ELBENCHO_DEFAULT_VERSION}"
+ELBENCHO_SHA256_X86_64="0ff66bd031fe5cb0004bf74e40e13a6e99ee8961dc9393afd6d48d196db1e328"
+ELBENCHO_SHA256_AARCH64="a5a18384c432a30e871cc94e0b87b0e7434dc0d1a251cbe12abd1afe2c1dd30e"
 
 # Optional download cache directory (e.g. podman --mount=type=cache at
 # /var/cache/ltvm-tools).  Unset or empty disables caching.
@@ -402,6 +406,48 @@ echo "auster: Lustre tests are not installed" >&2
 exit 127
 AUSTER
 chmod 755 "$PREFIX/bin/auster"
+
+# elbencho (storage benchmark: https://github.com/breuner/elbencho)
+# Install the official static binary for TARGET_ARCH so it works across
+# every distro (including older GCC/Boost on EL8 and Leap 15.6) and in
+# cross-compiled images without extra runtime dependencies.
+case "$TARGET_ARCH" in
+	aarch64|arm64)
+		ELBENCHO_ARCH="aarch64"
+		ELBENCHO_DEFAULT_SHA256="$ELBENCHO_SHA256_AARCH64"
+		;;
+	x86_64|amd64)
+		ELBENCHO_ARCH="x86_64"
+		ELBENCHO_DEFAULT_SHA256="$ELBENCHO_SHA256_X86_64"
+		;;
+	*)
+		ELBENCHO_ARCH=""
+		ELBENCHO_DEFAULT_SHA256=""
+		;;
+esac
+if [[ -n "$ELBENCHO_ARCH" ]]; then
+	ELBENCHO_SHA256="${ELBENCHO_SHA256:-}"
+	if [[ -z "$ELBENCHO_SHA256" ]]; then
+		if [[ "$ELBENCHO_VERSION" == "$ELBENCHO_DEFAULT_VERSION" ]]; then
+			ELBENCHO_SHA256="$ELBENCHO_DEFAULT_SHA256"
+		else
+			echo "WARNING: ELBENCHO_VERSION=${ELBENCHO_VERSION} set without ELBENCHO_SHA256; skipping sha256 verification" >&2
+		fi
+	fi
+	rm -rf /tmp/elbencho
+	fetch_tar "elbencho-static-${ELBENCHO_VERSION}-${ELBENCHO_ARCH}.tar.gz" \
+		"https://github.com/breuner/elbencho/releases/download/v${ELBENCHO_VERSION}/elbencho-static-${ELBENCHO_ARCH}.tar.gz" \
+		-xzf /tmp/elbencho "$ELBENCHO_SHA256"
+	# Strip debug info from the static binary (~35 MB smaller per image).
+	_strip="${CROSS_TRIPLE:+${CROSS_TRIPLE}-}strip"
+	if command -v "$_strip" >/dev/null 2>&1; then
+		"$_strip" /tmp/elbencho/elbencho 2>/dev/null || true
+	fi
+	install -m 0755 /tmp/elbencho/elbencho "$PREFIX/bin/elbencho"
+	rm -rf /tmp/elbencho
+else
+	echo "--- Skipping elbencho (unsupported arch: ${TARGET_ARCH})"
+fi
 
 # FlameGraph (pure perl scripts -- no compilation needed)
 fetch_git_tree "FlameGraph-${FLAMEGRAPH_REF}" \

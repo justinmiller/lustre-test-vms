@@ -65,6 +65,21 @@ class TestBuildToolsStaticChecks:
         for call in calls:
             assert '""' not in call, f"unpinned fetch_git_tree call: {call}"
 
+    def test_elbencho_pinned_for_x86_64_and_aarch64(self) -> None:
+        text = BUILD_TOOLS.read_text()
+        assert 'ELBENCHO_DEFAULT_VERSION="3.4-1"' in text
+        assert (
+            'ELBENCHO_VERSION="${ELBENCHO_VERSION:-$ELBENCHO_DEFAULT_VERSION}"'
+            in text
+        )
+        assert "ELBENCHO_SHA256_X86_64=" in text
+        assert "ELBENCHO_SHA256_AARCH64=" in text
+        assert "https://github.com/breuner/elbencho/releases/download/" in text
+        assert (
+            'install -m 0755 /tmp/elbencho/elbencho "$PREFIX/bin/elbencho"'
+            in text
+        )
+
     def test_every_image_dockerfile_mounts_tools_cache(self) -> None:
         dockerfiles = sorted(TARGETS_DIR.glob("*/image.Dockerfile"))
         assert dockerfiles
@@ -208,6 +223,57 @@ class TestFetchHelpers:
         )
         assert r.returncode == 0, r.stderr
         assert (out3 / "pkg" / "src_file.txt").read_text() == "inside archive\n"
+
+    def test_fetch_tar_verifies_sha256_on_miss_and_heals_tampered_cache(
+        self, tmp_path: Path
+    ) -> None:
+        good_payload = tmp_path / "good.txt"
+        good_payload.write_text("authentic\n")
+        good_tar = tmp_path / "good.tar.gz"
+        with tarfile.open(good_tar, "w:gz") as tf:
+            tf.add(good_payload, arcname="bin/tool")
+        good_sha = hashlib.sha256(good_tar.read_bytes()).hexdigest()
+
+        bad_payload = tmp_path / "bad.txt"
+        bad_payload.write_text("tampered\n")
+        bad_tar = tmp_path / "bad.tar.gz"
+        with tarfile.open(bad_tar, "w:gz") as tf:
+            tf.add(bad_payload, arcname="bin/tool")
+
+        cache = tmp_path / "cache"
+
+        # Bad upstream archive is rejected and not cached.
+        bad_out = tmp_path / "bad_out"
+        r = _run_helper(
+            f'TOOLS_CACHE_DIR="{cache}"\n'
+            f'fetch_tar "tool.tar.gz" "file://{bad_tar}" -xzf "{bad_out}" "{good_sha}"\n'
+        )
+        assert r.returncode != 0
+        assert "sha256 mismatch" in r.stderr
+        assert not (cache / "tool.tar.gz").exists()
+
+        # Valid upstream succeeds and populates cache.
+        out1 = tmp_path / "out1"
+        r = _run_helper(
+            f'TOOLS_CACHE_DIR="{cache}"\n'
+            f'fetch_tar "tool.tar.gz" "file://{good_tar}" -xzf "{out1}" "{good_sha}"\n'
+        )
+        assert r.returncode == 0, r.stderr
+        assert (out1 / "bin" / "tool").read_text() == "authentic\n"
+
+        # Tampered (valid-tar, wrong-sha256) cache entry is rejected and healed.
+        (cache / "tool.tar.gz").write_bytes(bad_tar.read_bytes())
+        out2 = tmp_path / "out2"
+        r = _run_helper(
+            f'TOOLS_CACHE_DIR="{cache}"\n'
+            f'fetch_tar "tool.tar.gz" "file://{good_tar}" -xzf "{out2}" "{good_sha}"\n'
+        )
+        assert r.returncode == 0, r.stderr
+        assert (out2 / "bin" / "tool").read_text() == "authentic\n"
+        assert (
+            hashlib.sha256((cache / "tool.tar.gz").read_bytes()).hexdigest()
+            == good_sha
+        )
 
     def test_fetch_git_tree_pinned_ref_and_cache_hit(
         self, tmp_path: Path

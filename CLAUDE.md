@@ -431,7 +431,7 @@ Built as a container via podman, exported to ext4 with
 `mke2fs -d` under fakeroot (rootless).  Installs
 `packages-{base,server,test,debug}.txt` +
 `packages-os.txt`, source-built tools (IOR, mdtest,
-iozone, pjdfstest, FlameGraph, drgn, Lustre-patched
+iozone, pjdfstest, elbencho, FlameGraph, drgn, Lustre-patched
 e2fsprogs), passwordless root SSH, serial console
 autologin, kdump pre-configured (vmlinuz + initramfs
 baked in at build time).  No kernel inside the image --
