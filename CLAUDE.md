@@ -1396,7 +1396,8 @@ option it does not know.
 first MDS node, each node's lustre_{mgs,mds,oss,root} and host keys in
 its own /etc/krb5.keytab, password principals for the test users.  The
 guest-side work is `krb5-node.sh` and `krb5-kdc.sh` beside it, piped to
-`bash -s`.  rhel-family targets only (dnf, sssd-kcm's drop-in).
+`bash -s`.  rhel- and debian-family targets (dnf or apt, sssd-kcm's
+drop-in).
 
 The framework runs every remote command through pdsh.  The rocky10
 and mainline images take it from the epel-10 branch (their 10.1 base

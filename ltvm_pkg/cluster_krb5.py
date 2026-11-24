@@ -29,6 +29,7 @@ KDC_SCRIPT = Path(__file__).parent / "krb5-kdc.sh"
 DEFAULT_REALM = "LTVM.TEST"
 # sanity-krb5's runas users (uid 500/501 in the image)
 DEFAULT_USERS = ("sanityusr", "sanityusr1")
+SUPPORTED_OS_FAMILIES = ("rhel", "debian")
 
 
 def _ssh(
@@ -121,7 +122,11 @@ def cmd_cluster_krb5(args: argparse.Namespace) -> None:
         )
     from .vm_commands import _os_family_for_vm
 
-    family = _os_family_for_vm(VMInfo.load(names[0]), "krb5")
-    if family != "rhel":
-        die(f"cluster krb5 supports rhel-family targets only, not {family}")
+    for name in names:
+        family = _os_family_for_vm(VMInfo.load(name), "krb5")
+        if family not in SUPPORTED_OS_FAMILIES:
+            die(
+                f"cluster krb5 supports {' and '.join(SUPPORTED_OS_FAMILIES)}"
+                f"-family targets only, not {family} ({name})"
+            )
     setup(cluster, realm=args.realm, timeout=args.timeout)

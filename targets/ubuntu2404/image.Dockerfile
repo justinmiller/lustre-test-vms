@@ -86,6 +86,7 @@ RUN bash /tmp/setup-serial.sh
 RUN bash /tmp/setup-network.sh
 RUN bash /tmp/setup-kdump.sh
 RUN bash /tmp/setup-services.sh unattended-upgrades.service snapd.service snapd.socket
+RUN systemctl disable krb5-kdc.service krb5-admin-server.service 2>/dev/null || true
 
 # Clean up
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/*

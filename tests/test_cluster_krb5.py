@@ -92,3 +92,99 @@ def test_setup_stops_on_a_failing_node(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cluster_krb5, "_ssh", fake_ssh)
     with pytest.raises(SystemExit):
         cluster_krb5.setup(c)
+
+
+@pytest.mark.parametrize(
+    "families,should_pass",
+    [
+        (["rhel", "rhel"], True),
+        (["debian", "debian"], True),
+        (["rhel", "debian"], True),
+        (["suse", "suse"], False),
+        (["rhel", "suse"], False),
+    ],
+)
+def test_cmd_cluster_krb5_checks_all_nodes_os_family(
+    families: list[str],
+    should_pass: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import argparse
+
+    from ltvm_pkg import vm_cluster, vm_commands
+
+    c = _cluster(("co9-mds", ["mgs", "mds"]), ("co9-c1", ["client"]))
+    fam_by_name = {"co9-mds": families[0], "co9-c1": families[1]}
+
+    monkeypatch.setattr(cluster_krb5.ClusterInfo, "load", lambda name: c)
+    monkeypatch.setattr(
+        cluster_krb5.vm_claim, "require_all", lambda names, op: None
+    )
+    monkeypatch.setattr(vm_cluster, "_node_state", lambda name: "up")
+    monkeypatch.setattr(
+        cluster_krb5.VMInfo,
+        "load",
+        lambda name: SimpleNamespace(name=name, ip="10.0.0.1"),
+    )
+    monkeypatch.setattr(
+        vm_commands,
+        "_os_family_for_vm",
+        lambda vm, cmd: fam_by_name[vm.name],
+    )
+    ran: list[str] = []
+    monkeypatch.setattr(
+        cluster_krb5,
+        "setup",
+        lambda cluster, **kw: ran.append(cluster.name),
+    )
+
+    ns = argparse.Namespace(name="co9", realm="LTVM.TEST", timeout=600)
+    if should_pass:
+        cluster_krb5.cmd_cluster_krb5(ns)
+        assert ran == ["co9"]
+    else:
+        with pytest.raises(SystemExit):
+            cluster_krb5.cmd_cluster_krb5(ns)
+        assert ran == []
+
+
+def test_krb5_scripts_syntax_and_debian_support() -> None:
+    for script in (cluster_krb5.NODE_SCRIPT, cluster_krb5.KDC_SCRIPT):
+        r = subprocess.run(
+            ["bash", "-n", str(script)], capture_output=True, text=True
+        )
+        assert r.returncode == 0, r.stderr
+
+    node_sh = cluster_krb5.NODE_SCRIPT.read_text()
+    assert "krb5-user sssd-kcm keyutils" in node_sh
+    assert "DEBIAN_FRONTEND=noninteractive" in node_sh
+    assert 'KDC_LOG="SYSLOG:INFO:DAEMON"' in node_sh
+
+    kdc_sh = cluster_krb5.KDC_SCRIPT.read_text()
+    assert "/etc/krb5kdc" in kdc_sh
+    assert "/var/lib/krb5kdc" in kdc_sh
+    assert "krb5-kdc krb5-admin-server" in kdc_sh
+    assert "KDC_SVC=krb5-kdc" in kdc_sh
+    assert "systemctl disable --now krb5-admin-server.service" in kdc_sh
+
+
+@pytest.mark.parametrize("target", ["debian13", "ubuntu2404", "ubuntu2604"])
+def test_debian_package_maps_include_krb5_server_and_sssd_kcm(
+    target: str,
+) -> None:
+    from pathlib import Path
+
+    lines = [
+        line.split()
+        for line in (
+            Path(__file__).resolve().parent.parent
+            / "targets"
+            / target
+            / "package-map.txt"
+        )
+        .read_text()
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert ["krb5-server", "krb5-kdc", "krb5-admin-server"] in lines
+    assert ["sssd-kcm", "-"] not in lines
