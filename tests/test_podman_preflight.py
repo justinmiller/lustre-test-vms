@@ -667,14 +667,54 @@ class TestPodmanUsageLock:
         assert _OtherProcess.can_lock(lock, "sh")
         assert not _OtherProcess.can_lock(lock, "ex")
 
-    def test_no_hold_off_macos(
+    def test_hold_works_off_macos_without_touching_last_use(
+        self, lock: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Linux builds also hold the usage lock so clean --build-cache sees them."""
+        import ltvm_pkg.host_setup as hs
+
+        monkeypatch.setattr(hs, "is_macos", lambda: False)
+        hs.hold_podman_usage()
+        assert hs._usage_fd is not None
+        assert _OtherProcess.can_lock(lock, "sh")
+        assert not _OtherProcess.can_lock(lock, "ex")
+        assert not hs._podman_file("last-use").exists()
+
+    def test_exclusive_lock_upgrades_and_downgrades_without_deadlock(
+        self, lock: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """podman_exclusive_lock upgrades our shared hold, allows re-entrant
+        hold_podman_usage() without self-deadlock, and restores shared on exit."""
+        import ltvm_pkg.host_setup as hs
+
+        monkeypatch.setattr(hs, "is_macos", lambda: False)
+        hs.hold_podman_usage()
+        with hs.podman_exclusive_lock() as acquired:
+            assert acquired is True
+            # Re-entrant hold_podman_usage() must not block or open a second fd.
+            hs.hold_podman_usage()
+            assert not _OtherProcess.can_lock(lock, "sh")
+            assert not _OtherProcess.can_lock(lock, "ex")
+        # Back to shared hold after exiting.
+        assert hs._usage_fd is not None
+        assert _OtherProcess.can_lock(lock, "sh")
+        assert not _OtherProcess.can_lock(lock, "ex")
+
+    def test_exclusive_lock_refused_while_another_build_holds(
         self, lock: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import ltvm_pkg.host_setup as hs
 
         monkeypatch.setattr(hs, "is_macos", lambda: False)
         hs.hold_podman_usage()
-        assert hs._usage_fd is None
+        other = _OtherProcess(lock)
+        try:
+            with hs.podman_exclusive_lock() as acquired:
+                assert acquired is False
+            # Shared hold is re-established after failed upgrade.
+            assert hs._usage_fd is not None
+        finally:
+            other.release()
 
     def test_idle_lock_refused_while_another_process_holds(
         self, lock: Path

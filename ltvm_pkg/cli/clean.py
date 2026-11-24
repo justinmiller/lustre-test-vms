@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ltvm_pkg import build_volumes, podman_gc
+from ltvm_pkg import build_caches, build_volumes, podman_gc
 from ltvm_pkg.cli.util import (
     EXIT_ERROR,
     EXIT_OK,
@@ -645,6 +645,109 @@ def _print_volumes(rep: _VolumeReport) -> None:
         print()
 
 
+@dataclass
+class _BuildCacheReport:
+    prune: list[dict[str, Any]] = field(default_factory=list)
+    keep: list[dict[str, Any]] = field(default_factory=list)
+    entries_to_prune: list[build_caches.CacheEntry] = field(
+        default_factory=list
+    )
+    checked: bool = True
+
+
+def _build_cache_report(
+    target_arg: str | None,
+    *,
+    prune_caches: bool,
+    older_than_days: float | None,
+    user_zfs: bool,
+) -> _BuildCacheReport:
+    """Podman/buildah persistent build-cache mounts (`ltvm-*`).
+
+    In normal `ltvm clean` runs caches are listed as kept (pass
+    `--build-cache` to prune).  With `--build-cache`, matching caches
+    are selected for pruning (respecting `target_arg` and `--older-than`).
+    """
+    rep = _BuildCacheReport()
+    if user_zfs:
+        return rep
+    entries = build_caches.list_caches()
+    if entries is None:
+        rep.checked = False
+        return rep
+
+    now = datetime.now(tz=timezone.utc).timestamp()
+
+    def row(e: build_caches.CacheEntry, reason: str) -> dict[str, Any]:
+        age = round(max(0.0, (now - e.mtime) / 86400.0), 1) if e.mtime else None
+        return {
+            "id": e.cache_id,
+            "bytes": e.bytes,
+            "age_days": age,
+            "target": e.target,
+            "reason": reason,
+        }
+
+    for e in entries:
+        if target_arg and e.target is not None and e.target != target_arg:
+            continue
+        if not prune_caches:
+            rep.keep.append(row(e, e.description))
+            continue
+        if target_arg and e.target is None:
+            rep.keep.append(
+                row(
+                    e,
+                    f"{e.description}; shared across targets, omit target to prune",
+                )
+            )
+            continue
+        if older_than_days is not None:
+            age_d = (now - e.mtime) / 86400.0 if e.mtime else 0.0
+            if age_d < older_than_days:
+                rep.keep.append(
+                    row(
+                        e, f"{e.description}; younger than {older_than_days:g}d"
+                    )
+                )
+                continue
+        rep.prune.append(row(e, e.description))
+        rep.entries_to_prune.append(e)
+    return rep
+
+
+def _podman_unavail_msg() -> str:
+    if build_caches.is_macos():
+        return "podman could not be asked (is the podman machine running?)"
+    return "podman could not be asked"
+
+
+def _print_build_caches(rep: _BuildCacheReport, *, pruning: bool) -> None:
+    if not rep.checked:
+        print(f"Podman build caches: not checked -- {_podman_unavail_msg()}")
+        print()
+        return
+    if rep.prune:
+        print("Podman build caches to remove:")
+        for c in rep.prune:
+            print(
+                f"  {c['id']:<44} {_format_bytes(c['bytes']):>10}  {c['reason']}"
+            )
+        print()
+    if rep.keep:
+        heading = (
+            "Podman build caches kept:"
+            if pruning
+            else "Podman build caches (kept; pass --build-cache to prune):"
+        )
+        print(heading)
+        for c in rep.keep:
+            print(
+                f"  {c['id']:<44} {_format_bytes(c['bytes']):>10}  {c['reason']}"
+            )
+        print()
+
+
 def _scan_user_zfs(target_arg: str | None) -> _TargetReport:
     """This user's own ZFS builds whose kernel is gone from artifacts.
 
@@ -704,6 +807,12 @@ def cmd_prune(args: argparse.Namespace) -> int:
     force = bool(getattr(args, "force", False))
     arch_flag = getattr(args, "arch", None)
     target_arg = getattr(args, "target", None)
+    user_zfs = bool(getattr(args, "user_zfs", False))
+    prune_build_cache = bool(getattr(args, "build_cache", False))
+    if user_zfs and prune_build_cache:
+        return _error(
+            "--user-zfs and --build-cache cannot be combined", use_json
+        )
 
     from ltvm_pkg.target_config import list_targets
 
@@ -713,11 +822,14 @@ def cmd_prune(args: argparse.Namespace) -> int:
         targets = list(list_targets())
 
     reports: list[_TargetReport] = []
-    if getattr(args, "user_zfs", False):
+    if user_zfs:
         # Only this user's cache: a slot user on a shared host has no
         # business pruning the shared artifacts, and cannot anyway.
         targets = []
         reports.append(_scan_user_zfs(target_arg))
+    elif prune_build_cache:
+        # Only this user's podman build-cache mounts.
+        targets = []
 
     from ltvm_pkg.image_store import referenced_images
 
@@ -755,7 +867,7 @@ def cmd_prune(args: argparse.Namespace) -> int:
     total_bytes = sum(c.bytes for c in all_candidates)
 
     # Host-wide extras, only on a full scan of the shared artifacts.
-    full_scan = not target_arg and not getattr(args, "user_zfs", False)
+    full_scan = not target_arg and not user_zfs and not prune_build_cache
     podman_dead: list[tuple[podman_gc.TagInfo, str]] = []
     idle: list[dict[str, Any]] = []
     idle_days = float(getattr(args, "idle_days", 14))
@@ -777,7 +889,15 @@ def cmd_prune(args: argparse.Namespace) -> int:
     volumes = _volume_report(
         target_arg,
         [c.path for c in all_candidates],
-        getattr(args, "user_zfs", False),
+        user_zfs or prune_build_cache,
+    )
+
+    # Podman/buildah persistent build-cache mounts (ltvm-apt-*, etc.).
+    build_cache_rep = _build_cache_report(
+        target_arg,
+        prune_caches=prune_build_cache,
+        older_than_days=older_than_days,
+        user_zfs=user_zfs,
     )
 
     # ---- Apply phase ----
@@ -807,6 +927,7 @@ def cmd_prune(args: argparse.Namespace) -> int:
                 apply_errors.append((c.path, str(e)))
     removed_podman: list[str] = []
     removed_volumes: list[str] = []
+    removed_build_caches: list[str] = []
     if apply:
         for t, _why in podman_dead:
             if podman_gc.remove_tag(t.tag):
@@ -825,6 +946,30 @@ def cmd_prune(args: argparse.Namespace) -> int:
                         "podman volume rm refused: a container uses it",
                     )
                 )
+        if prune_build_cache and not build_cache_rep.checked:
+            apply_errors.append(
+                (
+                    Path("podman-build-cache"),
+                    _podman_unavail_msg(),
+                )
+            )
+        elif build_cache_rep.entries_to_prune:
+            rm_res = build_caches.remove_caches(
+                build_cache_rep.entries_to_prune
+            )
+            for entry in build_cache_rep.entries_to_prune:
+                ok, err = rm_res.get(
+                    entry.dir_name, (False, "could not remove cache directory")
+                )
+                if ok:
+                    removed_build_caches.append(entry.cache_id)
+                else:
+                    apply_errors.append(
+                        (
+                            Path(entry.cache_id),
+                            err or "could not remove cache directory",
+                        )
+                    )
 
     # ---- Output ----
     payload: dict[str, Any] = {
@@ -860,8 +1005,12 @@ def cmd_prune(args: argparse.Namespace) -> int:
         "podman_volumes": volumes.prune,
         "podman_volumes_kept": volumes.keep,
         "podman_volumes_checked": volumes.checked,
+        "podman_build_caches": build_cache_rep.prune,
+        "podman_build_caches_kept": build_cache_rep.keep,
+        "podman_build_caches_checked": build_cache_rep.checked,
         "removed_podman": removed_podman,
         "removed_volumes": removed_volumes,
+        "removed_build_caches": removed_build_caches,
         "idle_vms": idle,
     }
 
@@ -880,14 +1029,52 @@ def cmd_prune(args: argparse.Namespace) -> int:
         print()
 
     _print_volumes(volumes)
+    _print_build_caches(build_cache_rep, pruning=prune_build_cache)
 
     if not all_candidates:
-        if not podman_dead and not volumes.prune:
-            print("Nothing to prune.")
+        if not podman_dead and not volumes.prune and not build_cache_rep.prune:
+            if apply_errors:
+                for p, msg in apply_errors:
+                    print(f"  {p}: {msg}")
+            else:
+                print("Nothing to prune.")
         elif apply:
-            print(f"Removed {_podman_counts(removed_podman, removed_volumes)}.")
+            if build_cache_rep.prune:
+                freed = sum(
+                    c["bytes"]
+                    for c in build_cache_rep.prune
+                    if c["id"] in removed_build_caches
+                )
+                if apply_errors:
+                    print(
+                        f"Removed {len(removed_build_caches)} of "
+                        f"{len(build_cache_rep.prune)} podman build cache(s); "
+                        f"{len(apply_errors)} failed:"
+                    )
+                    for p, msg in apply_errors:
+                        print(f"  {p}: {msg}")
+                else:
+                    n = len(removed_build_caches)
+                    print(
+                        f"Removed {n} podman build cache"
+                        f"{'' if n == 1 else 's'}, "
+                        f"freed {_format_bytes(freed)}."
+                    )
+            else:
+                print(
+                    f"Removed {_podman_counts(removed_podman, removed_volumes)}."
+                )
         else:
-            print("Re-run with --apply to remove them.")
+            if build_cache_rep.prune:
+                b_total = sum(c["bytes"] for c in build_cache_rep.prune)
+                n = len(build_cache_rep.prune)
+                print(
+                    f"Would free {_format_bytes(b_total)} across {n} "
+                    f"podman build cache{'' if n == 1 else 's'}.  "
+                    f"Re-run with --apply to remove."
+                )
+            else:
+                print("Re-run with --apply to remove them.")
         return EXIT_ERROR if apply_errors else EXIT_OK
 
     # Human table

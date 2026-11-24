@@ -2331,6 +2331,14 @@ def build_parser() -> argparse.ArgumentParser:
         "artifacts",
     )
     sp.add_argument(
+        "--build-cache",
+        dest="build_cache",
+        action="store_true",
+        default=False,
+        help="Instead prune ltvm's persistent podman build caches "
+        "(ltvm-apt-*, ltvm-build-tools, ltvm-rdma-core, ltvm-dnf-*)",
+    )
+    sp.add_argument(
         "--idle-days",
         dest="idle_days",
         type=float,
