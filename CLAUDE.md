@@ -1509,7 +1509,8 @@ entries at export (`image_build._rootfs_hosts_sh`) and ahead of every
 cluster block, so VMs from older images get them at the next `cluster
 deploy`.  Never `127.0.1.1 <hostname>`: a name that resolves to loopback
 gives LNet a 127.x NID.  A VM's own name comes from nss `myhostname`
-(Rocky's default; `libnss-myhostname` in debian13's packages), not DNS:
+(Rocky's default; `libnss-myhostname` in debian13's and Ubuntu's
+packages), not DNS:
 a single-node test run ssh's to `$(hostname)`, and the host's dnsmasq
 may not answer (on a Mac whose application firewall blocks it, it never
 does).
