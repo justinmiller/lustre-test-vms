@@ -577,6 +577,18 @@ def _neutralize_podman_gc() -> object:
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_build_caches() -> object:
+    """Keep clean and doctor off real podman build-cache mounts.
+
+    With _podman_available() returning False, list_caches() and
+    doctor_report() do not touch podman or the filesystem.
+    tests/test_build_caches.py enables it again for its own cases.
+    """
+    with patch("ltvm_pkg.build_caches._podman_available", new=_returns(False)):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_host_clean_state() -> object:
     """Keep the host's VMs, disk and image files out of clean and builds.
 
