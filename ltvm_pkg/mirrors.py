@@ -85,17 +85,9 @@ _URL_RE = re.compile(
     r"https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~%+@/-]*)?"
 )
 
-_warned: set[str] = set()
-
 
 class MirrorConfigError(RuntimeError):
     """A setting that cannot be used, and must not be skipped quietly."""
-
-
-def _warn(problem: str) -> None:
-    if problem not in _warned:
-        _warned.add(problem)
-        print(f"warning: {problem}", file=sys.stderr)
 
 
 def _env_name(key: str) -> str:
@@ -191,8 +183,8 @@ def _load(site: Path, _site_state: object, _env: object) -> _Settings:
             ca, pem = _read_ca(raw, origin)
         except MirrorConfigError as e:
             ca_error = str(e)
-    for problem in problems:
-        _warn(problem)
+    for problem in dict.fromkeys(problems):
+        print(f"warning: {problem}", file=sys.stderr)
     return _Settings(out, ca, pem, ca_error, tuple(problems))
 
 

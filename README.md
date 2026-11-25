@@ -314,7 +314,7 @@ ca     = /etc/pki/ca-trust/source/anchors/example-ca.pem
 
 | key | replaces |
 |---|---|
-| `rocky` | `dl.rockylinux.org/pub/rocky` |
+| `rocky` | `dl.rockylinux.org/$contentdir` (`pub/rocky`) |
 | `epel` | `download.example/pub/epel` (EPEL's own mirror path) |
 | `debian` | `deb.debian.org/debian` |
 | `debian-security` | `deb.debian.org/debian-security`, `security.debian.org/debian-security` |

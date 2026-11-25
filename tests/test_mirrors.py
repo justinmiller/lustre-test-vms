@@ -85,7 +85,6 @@ def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         if k.startswith("LTVM_MIRROR_") or k == mirrors.NO_MIRRORS_ENV:
             monkeypatch.delenv(k)
     mirrors._load.cache_clear()
-    mirrors._warned.clear()
 
     def write(body: str) -> Path:
         conf.write_text(f"[mirrors]\n{body}\n")
@@ -209,7 +208,7 @@ class TestConfigAndArgs:
         ]
 
     def test_invalid_keys_urls_and_ca_reported(
-        self, site, tmp_path, capsys
+        self, site, tmp_path, capsys, monkeypatch
     ) -> None:
         bad_ca = tmp_path / "not-a-cert.pem"
         bad_ca.write_text("hello")
@@ -220,6 +219,9 @@ class TestConfigAndArgs:
         )
         assert mirrors.configured() == {"debian": ["http://good.example/deb"]}
         assert "bogus" in capsys.readouterr().err
+        # Repeated reads hit the cache and do not re-warn.
+        assert mirrors.configured() == {"debian": ["http://good.example/deb"]}
+        assert capsys.readouterr().err == ""
         with pytest.raises(mirrors.MirrorConfigError, match="no PEM"):
             mirrors.ca_path()
         issues, notes = mirrors.doctor_report()
@@ -228,6 +230,12 @@ class TestConfigAndArgs:
         assert any("ftp://bad.example" in i for i in issues)
         assert any("no PEM" in i for i in issues)
         assert any("mirror debian:" in n for n in notes)
+        # Loading a second site config in the same process still warns.
+        other = tmp_path / "other.conf"
+        other.write_text("[mirrors]\nbogus = http://y.example\n")
+        monkeypatch.setenv("LTVM_SITE_CONFIG", str(other))
+        assert mirrors.configured() == {}
+        assert "bogus" in capsys.readouterr().err
 
     def test_build_args_and_labels_and_cwd(self, site, ca_file) -> None:
         site(f"rocky = https://m.example/rocky\nca = {ca_file}\n")
