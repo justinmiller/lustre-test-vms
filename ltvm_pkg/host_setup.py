@@ -2066,8 +2066,9 @@ def podman_exclusive_lock() -> Iterator[bool]:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        # On BSD/macOS and Linux, a failed non-blocking upgrade from
-        # LOCK_SH to LOCK_EX drops the existing LOCK_SH on *fd*.
+        # A failed non-blocking upgrade from LOCK_SH to LOCK_EX may drop
+        # the existing LOCK_SH on *fd* depending on OS/kernel, so close
+        # and re-acquire cleanly.
         os.close(fd)
         _usage_fd = None
         if had_shared:
