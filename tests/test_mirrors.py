@@ -366,6 +366,15 @@ class TestContainerDrift:
         self._inspect(monkeypatch, "", rc=125)
         assert mirrors.container_drift("ltvm-build-debian13") is None
 
+    def test_unreadable_ca_warns_instead_of_raising(
+        self, site, tmp_path
+    ) -> None:
+        missing = tmp_path / "missing-ca.crt"
+        site(f"debian = https://m.example/debian\nca = {missing}\n")
+        why = mirrors.container_drift("ltvm-build-debian13")
+        assert why and "cannot check package mirror drift" in why
+        assert str(missing) in why
+
 
 # ---------------------------------------------------------------------------
 # targets/common/ltvm-mirrors.sh

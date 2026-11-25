@@ -495,7 +495,10 @@ def container_drift(container_tag: str) -> str | None:
     both match (including when neither uses mirrors) or when podman
     cannot say.
     """
-    current = fingerprint()
+    try:
+        current = fingerprint()
+    except MirrorConfigError as e:
+        return f"cannot check package mirror drift for '{container_tag}': {e}"
     try:
         r = subprocess.run(
             [
