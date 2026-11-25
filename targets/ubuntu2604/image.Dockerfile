@@ -89,13 +89,14 @@ RUN chmod 0755 /usr/local/sbin/setup-nic-softroce.sh \
 # put gnu17 cc/gcc wrappers first on PATH for this step only.
 # Its own apt-get install has no cache mount, so its .debs and lists are
 # cleaned here rather than left in the layer.
-RUN mkdir /tmp/gnu17 \
+RUN --mount=type=cache,id=ltvm-build-tools,target=/var/cache/ltvm-tools,sharing=shared \
+    mkdir /tmp/gnu17 \
     && for c in cc gcc; do \
          printf '#!/bin/sh\nexec /usr/bin/gcc -std=gnu17 "$@"\n' \
              > /tmp/gnu17/$c; \
          chmod 0755 /tmp/gnu17/$c; \
        done \
-    && PATH=/tmp/gnu17:$PATH bash /tmp/build-tools.sh \
+    && PATH=/tmp/gnu17:$PATH LTVM_TOOLS_CACHE=/var/cache/ltvm-tools bash /tmp/build-tools.sh \
     && rm -rf /tmp/gnu17 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 

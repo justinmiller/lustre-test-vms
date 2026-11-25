@@ -77,7 +77,9 @@ RUN chmod 0755 /usr/local/sbin/setup-nic-softroce.sh \
 # cross-built image does.
 RUN echo /usr/lib64/mpi/gcc/openmpi4/lib64 > /etc/ld.so.conf.d/openmpi4.conf \
     && ldconfig
-RUN PATH=/usr/lib64/mpi/gcc/openmpi4/bin:$PATH bash /tmp/build-tools.sh
+RUN --mount=type=cache,id=ltvm-build-tools,target=/var/cache/ltvm-tools,sharing=shared \
+    PATH=/usr/lib64/mpi/gcc/openmpi4/bin:$PATH \
+    LTVM_TOOLS_CACHE=/var/cache/ltvm-tools bash /tmp/build-tools.sh
 RUN { python3.11 -m pip install drgn || [ "$(uname -m)" != x86_64 ]; } \
     && rm -rf /root/.cache/pip
 

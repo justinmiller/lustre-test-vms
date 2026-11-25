@@ -77,7 +77,9 @@ RUN chmod 0755 /usr/local/sbin/setup-nic-softroce.sh \
 # Source-built tools: IOR, mdtest, iozone, pjdfstest, FlameGraph, drgn.
 # Its own apt-get install has no cache mount, so its .debs and lists are
 # cleaned here rather than left in the layer.
-RUN bash /tmp/build-tools.sh && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,id=ltvm-build-tools,target=/var/cache/ltvm-tools,sharing=shared \
+    LTVM_TOOLS_CACHE=/var/cache/ltvm-tools bash /tmp/build-tools.sh \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Lustre-patched e2fsprogs (pinned release).  Its libraries land in
 # /usr/lib, which ld.so searches after the multiarch directory holding
