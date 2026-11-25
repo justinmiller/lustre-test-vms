@@ -271,7 +271,7 @@ class TestBuildLustreMounts:
         captured: list[list[str]] = []
 
         def run(cmd: list[str], *a: Any, **kw: Any) -> Any:
-            if cmd[0] == "podman":
+            if cmd[:2] == ["podman", "run"]:
                 captured.append(cmd)
             r = MagicMock()
             r.returncode = 0

@@ -14,6 +14,8 @@ from __future__ import annotations
 import platform
 from dataclasses import dataclass
 
+from . import mirrors
+
 
 @dataclass(frozen=True)
 class CrossInfo:
@@ -110,8 +112,42 @@ def cross_info(target_arch: str, host_arch: str) -> CrossInfo:
         kbuild_arch=t["kbuild_arch"],
         deb_arch=t["deb_arch"],
         multiarch_triple=t["multiarch_triple"],
-        apt_sources_url=t["apt_sources_url"],
+        # The site's mirrors, space-separated, for a deb822 URIs: line.
+        apt_sources_url=" ".join(mirrors.rewrite_url(t["apt_sources_url"])),
     )
+
+
+def leap_sysroot_repos(arch: str) -> tuple[str, str]:
+    """The oss and sle-update repos a Leap sysroot for *arch* installs from.
+
+    ``$VER`` is left for the shell to fill in from os-release.  Leap's
+    non-x86 trees are under ports/.  The site's mirror replaces
+    download.opensuse.org when there is one.
+    """
+    ports = "" if normalize_arch(arch) == "x86_64" else f"ports/{arch}/"
+    oss = (
+        f"http://download.opensuse.org/{ports}distribution/leap/$VER/repo/oss/"
+    )
+    sle = "http://download.opensuse.org/update/leap/$VER/sle/"
+    return mirrors.rewrite_url(oss)[0], mirrors.rewrite_url(sle)[0]
+
+
+def shell_quote_ver_url(url: str) -> str:
+    """Double-quote *url* for a shell command while keeping ``$VER`` expanded.
+
+    Escapes ``\\``, ``"``, ````` and every ``$`` other than ``$VER`` so
+    no shell metacharacter in a mirror URL can ever be interpreted.
+    """
+
+    def _esc(part: str) -> str:
+        return (
+            part.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("`", "\\`")
+            .replace("$", "\\$")
+        )
+
+    return '"' + "$VER".join(_esc(part) for part in url.split("$VER")) + '"'
 
 
 def host_deb_arch(host_arch: str) -> str:

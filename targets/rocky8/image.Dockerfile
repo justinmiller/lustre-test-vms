@@ -1,6 +1,13 @@
 ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:8.10
 FROM ${BASE_IMAGE}
 
+# The site's package mirrors and CA, from [mirrors] in /etc/ltvm.conf;
+# a no-op without them (common/ltvm-mirrors.sh).
+ARG LTVM_MIRRORS=
+ARG LTVM_MIRROR_CA_HASH=
+COPY common/ltvm-mirrors.sh /usr/local/sbin/ltvm-mirrors
+RUN --mount=type=secret,id=ltvm_mirror_ca,target=/run/secrets/ltvm_mirror_ca bash /usr/local/sbin/ltvm-mirrors apply
+
 # Rocky 8 VM base image.
 # Built via podman, exported to raw ext4 for QEMU microvm use.
 # No kernel installed -- QEMU passes it externally via -kernel.
@@ -10,6 +17,9 @@ FROM ${BASE_IMAGE}
 RUN dnf -y install epel-release dnf-plugins-core findutils grep \
     && dnf config-manager --set-enabled powertools \
     && dnf clean all
+
+# epel-release added repos of its own.
+RUN bash /usr/local/sbin/ltvm-mirrors apply
 
 # Copy package lists and install
 COPY common/packages-base.txt /tmp/packages-base.txt
