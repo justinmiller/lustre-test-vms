@@ -98,6 +98,7 @@ def _warn_low_disk() -> None:
 
 def _preflight_podman(use_json: bool) -> int | None:
     """Check podman is usable; return an error code if not, else None."""
+    hold_podman_usage()
     try:
         check_podman_machine_macos()
     except PodmanMachineError as e:

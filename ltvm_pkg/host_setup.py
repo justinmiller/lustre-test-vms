@@ -1997,23 +1997,26 @@ _usage_fd: int | None = None
 def hold_podman_usage() -> None:
     """Hold the podman usage lock, shared, for the rest of this process.
 
-    The macOS machine auto-stop stops the machine only when it can take
-    this lock exclusively, so every ltvm process using podman holds it
-    from before its first podman command -- the preflight that finds or
-    starts the machine included -- until it exits.  The `podman ps`
-    guard alone cannot see a concurrent ltvm invocation that is
-    mid-`podman build`, mid-load or mid-pull, and a hold taken only
-    after the preflight left a window in which another build's
-    auto-stop stopped the machine this one had just found running
-    ("server probably quit: unexpected EOF", "Cannot connect to
-    Podman").  Waits while an auto-stop is stopping the machine.
-    Idempotent; a no-op off macOS.
+    Every ltvm process using podman holds this lock from before its first
+    podman command -- the macOS preflight included -- until it exits:
+
+    - On macOS, the podman machine auto-stop stops the machine only when
+      it can take this lock exclusively, so no auto-stop can interrupt a
+      concurrent ``podman build``, ``load``, or ``pull``.
+    - On both Linux and macOS, callers requiring exclusive access (via
+      :func:`podman_exclusive_lock`) take this lock non-blockingly so
+      maintenance operations never collide with an in-flight podman
+      command.
+
+    Waits while another process holds the lock exclusively (e.g. an
+    auto-stop or a shared-cache prune).  Idempotent.
     """
     global _usage_fd
-    if _usage_fd is not None or not is_macos():
+    if _usage_fd is not None:
         return
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(_podman_lock_path(), os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(_podman_lock_path(), flags, 0o600)
     except OSError:
         return
     try:
@@ -2022,11 +2025,12 @@ def hold_podman_usage() -> None:
         os.close(fd)
         return
     _usage_fd = fd
-    # The idle stop counts from the last use, which is when the
-    # process ends: a build may hold the machine for an hour.
-    last_use = _podman_file("last-use")
-    touch_podman_use(last_use)
-    atexit.register(touch_podman_use, last_use)
+    if is_macos():
+        # The idle stop counts from the last use, which is when the
+        # process ends: a build may hold the machine for an hour.
+        last_use = _podman_file("last-use")
+        touch_podman_use(last_use)
+        atexit.register(touch_podman_use, last_use)
 
 
 @contextlib.contextmanager
@@ -2034,6 +2038,56 @@ def podman_usage_lock() -> Iterator[None]:
     """Hold the podman usage lock for (at least) the block."""
     hold_podman_usage()
     yield
+
+
+@contextlib.contextmanager
+def podman_exclusive_lock() -> Iterator[bool]:
+    """Acquire the podman usage lock exclusively, without waiting.
+
+    Yields ``True`` while this process holds ``LOCK_EX`` (preventing any
+    other ltvm process from starting podman work until the block exits),
+    or ``False`` when another ltvm process already holds the lock.
+
+    Keeps ``_usage_fd`` set while held so re-entrant calls to
+    :func:`hold_podman_usage` inside the block cannot self-deadlock on a
+    second file description.  On exit, downgrades back to a shared hold
+    if one was held before entering (or releases the lock otherwise).
+    """
+    global _usage_fd
+    had_shared = _usage_fd is not None
+    fd = _usage_fd
+    if fd is None:
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(_podman_lock_path(), flags, 0o600)
+        except OSError:
+            yield False
+            return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # A failed non-blocking upgrade from LOCK_SH to LOCK_EX may drop
+        # the existing LOCK_SH on *fd* depending on OS/kernel, so close
+        # and re-acquire cleanly.
+        os.close(fd)
+        _usage_fd = None
+        if had_shared:
+            hold_podman_usage()
+        yield False
+        return
+    _usage_fd = fd
+    try:
+        yield True
+    finally:
+        if had_shared:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH)
+            except OSError:
+                os.close(fd)
+                _usage_fd = None
+        else:
+            os.close(fd)
+            _usage_fd = None
 
 
 @contextlib.contextmanager
