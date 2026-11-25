@@ -232,6 +232,8 @@ class TestCrossBuildScript:
         apt = script[script.index("elif command -v apt-get") :]
         assert "libkrb5-dev:arm64" in apt
         assert "libssl-dev:arm64" in apt
+        assert "--force-overwrite" in apt
+        assert "set -o pipefail" in apt
         assert 'CROSS_CONFIGURE=""' in apt
         assert " $CROSS_CONFIGURE" in script[script.index("bash autogen.sh") :]
 
