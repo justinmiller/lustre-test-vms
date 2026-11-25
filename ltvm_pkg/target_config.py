@@ -1262,25 +1262,26 @@ class TargetConfig:
         h = _HashParts()
 
         # Always fold in this target's slice of targets.yaml so changes
-        # to container_image, srpm_url, kernel_deb_source, configure
-        # args, etc. invalidate every artifact for this target.  The
-        # ``variants`` block is excluded here and mixed in separately
-        # below (only for the relevant variant), so declaring a new
-        # variant doesn't invalidate the base cache.
+        # to container_image, srpm_url, kernel_deb_source, etc.
+        # invalidate every artifact for this target.  The ``variants``
+        # block is excluded here and mixed in separately below (only for
+        # the relevant variant), so declaring a new variant doesn't
+        # invalidate the base cache.
         #
-        # ``zfs`` is excluded for a different reason: no byte of the
-        # container, kernel or image depends on it.  ZFS is built
-        # between the kernel and Lustre and installed into the VM at
-        # deploy time, so the only things a version bump must
-        # invalidate are the ZFS artifact itself (zfs_build hashes the
-        # version directly) and the Lustre build (the version reaches
-        # its configure-flags stamp via --with-zfs).  Folding it in
-        # here would rebuild every container and kernel for a knob
-        # they do not read.
+        # ``zfs`` and ``configure_args`` are excluded for a different
+        # reason: no byte of the container, kernel or image depends on
+        # them.  ZFS is built between the kernel and Lustre and
+        # installed into the VM at deploy time (zfs_build hashes the
+        # version directly), and ``configure_args`` is read only by
+        # ``lustre_build`` (which stamps the resolved configure flags in
+        # its own build cache).  Folding either in here would rebuild
+        # every container and kernel for a knob they do not read.
         h.update(self.name.encode())
         h.update(self.arch.encode())
         base_data = {
-            k: v for k, v in self._data.items() if k not in ("variants", "zfs")
+            k: v
+            for k, v in self._data.items()
+            if k not in ("variants", "zfs", "configure_args")
         }
         # kernels.arch_config reaches the kernel hash through
         # kernel_config_overrides, for its own arch only.

@@ -48,10 +48,9 @@ targets:
     zfs:
       version: 2.3.4
   rocky9:
-    # No configure_args: the build container has no Kerberos v5, so
-    # --enable-gss makes configure fail with "Kerberos v5 with GSS
-    # support not found".  ltvm's base configure line has
-    # --disable-gss and leaves client crypto on.
+    configure_args:
+    - --enable-gss=yes
+    - --enable-crypto=yes
     container_image: quay.io/rockylinux/rockylinux:9
     kernels:
       available:
@@ -102,6 +101,9 @@ targets:
     # x86_64 default.  Also what keeps it from colliding with rocky9
     # when an unstamped machine is identified from /etc/os-release.
     arch: aarch64
+    configure_args:
+    - --enable-gss=yes
+    - --enable-crypto=yes
     container_image: quay.io/rockylinux/rockylinux:9
     kernels:
       available:
@@ -284,6 +286,10 @@ targets:
     os_version: '15.6'
     status: experimental
   ubuntu2404:
+    # --enable-crypto=yes is omitted: this defconfig client kernel does
+    # not enable CONFIG_FS_ENCRYPTION (unlike ubuntu2604-server).
+    configure_args:
+    - --enable-gss=yes
     container_image: docker.io/library/ubuntu:24.04
     kernel_deb_source: linux-source-6.8.0
     kernels:
@@ -390,6 +396,10 @@ targets:
   # firewalls (nested KVM, nftables, cgroup-BPF, quota).  The deb path
   # starts from defconfig, so everything beyond it is listed here.
   ubuntu2604:
+    # --enable-crypto=yes is omitted: this defconfig client kernel does
+    # not enable CONFIG_FS_ENCRYPTION (unlike ubuntu2604-server).
+    configure_args:
+    - --enable-gss=yes
     container_image: docker.io/library/ubuntu:26.04
     kernel_deb_source: linux-source-7.0.0
     kernels:
@@ -501,6 +511,9 @@ targets:
   # ubuntu2604's plus what a server and its test suites need on top of
   # defconfig.
   ubuntu2604-server:
+    configure_args:
+    - --enable-gss=yes
+    - --enable-crypto=yes
     container_image: docker.io/library/ubuntu:26.04
     kernel_deb_source: linux-source-7.0.0=7.0.0-14.14
     kernels:
@@ -541,6 +554,9 @@ targets:
   # vanilla ldiskfs-6.12-ml series.  Pinned to 6.12.107: from 6.12.111
   # that series' ext4-filename-encode.patch no longer applies.
   debian13:
+    configure_args:
+    - --enable-gss=yes
+    - --enable-crypto=yes
     container_image: docker.io/library/debian:13
     default_mem: 4096
     kernel_deb_source: linux-source-6.12=6.12.107-1

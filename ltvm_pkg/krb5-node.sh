@@ -6,15 +6,34 @@ set -euo pipefail
 REALM=$1
 KDC=$2
 
-# in images built since they joined packages-test.txt; dnf for older ones
-pkgs="krb5-workstation sssd-kcm keyutils"
-rpm -q $pkgs > /dev/null || dnf install -y -q $pkgs
+# in images built since they joined packages-test.txt; install for older ones
+if command -v dnf >/dev/null 2>&1; then
+	pkgs="krb5-workstation sssd-kcm keyutils"
+	KDC_LOG="FILE:/var/log/krb5kdc.log"
+	rpm -q $pkgs > /dev/null || dnf install -y -q $pkgs
+elif command -v apt-get >/dev/null 2>&1; then
+	pkgs="krb5-user sssd-kcm keyutils"
+	# Debian's krb5-kdc.service sets ReadOnlyDirectories=/, so /var/log is
+	# read-only for the KDC; send KDC logs to syslog/journald instead.
+	KDC_LOG="SYSLOG:INFO:DAEMON"
+	dpkg-query -W -f='${Status}\n' $pkgs 2>/dev/null | grep -cx 'install ok installed' \
+		| grep -qx 3 || {
+		DEBIAN_FRONTEND=noninteractive apt-get -qq update </dev/null
+		DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $pkgs </dev/null
+	}
+else
+	echo "unsupported package manager (need dnf or apt-get)" >&2
+	exit 1
+fi
 
 # sssd-kcm's drop-in makes KCM: the default ccache ahead of anything
 # krb5.conf says; keep the keyring default (sanity-krb5 test_11 asks for
 # KCM itself).
-sed -i 's/^[[:space:]]*default_ccache_name/#&/' \
-	/etc/krb5.conf.d/kcm_default_ccache
+mkdir -p /etc/krb5.conf.d
+if [[ -f /etc/krb5.conf.d/kcm_default_ccache ]]; then
+	sed -i 's/^[[:space:]]*default_ccache_name/#&/' \
+		/etc/krb5.conf.d/kcm_default_ccache
+fi
 systemctl enable -q --now sssd-kcm.socket
 
 mkdir -p /etc/request-key.d
@@ -35,7 +54,7 @@ includedir /etc/krb5.conf.d/
 
 [logging]
  default = FILE:/var/log/krb5libs.log
- kdc = FILE:/var/log/krb5kdc.log
+ kdc = $KDC_LOG
  admin_server = FILE:/var/log/kadmind.log
 
 [libdefaults]

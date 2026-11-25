@@ -90,6 +90,7 @@ RUN bash /tmp/setup-kdump.sh
 # hundreds of MB to /tmp during test suites, which otherwise fills /tmp
 # and OOMs the guest.
 RUN bash /tmp/setup-services.sh unattended-upgrades.service tmp.mount
+RUN systemctl disable krb5-kdc.service krb5-admin-server.service 2>/dev/null || true
 
 # Clean up
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/*

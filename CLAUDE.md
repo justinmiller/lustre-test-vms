@@ -235,7 +235,12 @@ concatenating them unchanged -- so `input_hash()` (the
 digest) and `input_components()` (the per-input digests
 `--why` diffs, also stored in `meta.json`) come from one
 code path.  Keep it that way: an explanation that disagrees
-with the rebuild decision is worse than none.
+with the rebuild decision is worse than none.  `variants`
+(mixed in per variant), `zfs` (hashed directly by `zfs_build`),
+and `configure_args` (read only by `lustre_build`, which stamps
+the resolved configure flags in its own cache) are excluded from
+the base `targets.yaml` slice so changing them does not rebuild
+containers, kernels, or images.
 
 [tests/test_input_hash_stability.py](tests/test_input_hash_stability.py)
 pins the digest for every target and artifact.  If it fails,
@@ -1396,7 +1401,8 @@ option it does not know.
 first MDS node, each node's lustre_{mgs,mds,oss,root} and host keys in
 its own /etc/krb5.keytab, password principals for the test users.  The
 guest-side work is `krb5-node.sh` and `krb5-kdc.sh` beside it, piped to
-`bash -s`.  rhel-family targets only (dnf, sssd-kcm's drop-in).
+`bash -s`.  rhel- and debian-family targets (dnf or apt, sssd-kcm's
+drop-in).
 
 The framework runs every remote command through pdsh.  The rocky10
 and mainline images take it from the epel-10 branch (their 10.1 base

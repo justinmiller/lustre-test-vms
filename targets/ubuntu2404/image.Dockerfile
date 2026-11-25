@@ -89,6 +89,7 @@ RUN bash /tmp/setup-kdump.sh
 # (parity with Debian 13 / Ubuntu 26.04; lctl dk writes hundreds of MB
 # to /tmp during test suites).
 RUN bash /tmp/setup-services.sh unattended-upgrades.service snapd.service snapd.socket tmp.mount
+RUN systemctl disable krb5-kdc.service krb5-admin-server.service 2>/dev/null || true
 
 # Clean up
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/*
