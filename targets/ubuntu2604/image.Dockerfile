@@ -104,7 +104,10 @@ RUN bash /tmp/setup-ssh.sh
 RUN bash /tmp/setup-serial.sh
 RUN bash /tmp/setup-network.sh
 RUN bash /tmp/setup-kdump.sh
-RUN bash /tmp/setup-services.sh unattended-upgrades.service snapd.service snapd.socket
+# Mask tmp.mount so /tmp stays on the root disk rather than a 50%-RAM
+# tmpfs (Ubuntu 26.04 ships systemd 259, which enables tmp.mount by
+# default; lctl dk writes hundreds of MB to /tmp during test suites).
+RUN bash /tmp/setup-services.sh unattended-upgrades.service snapd.service snapd.socket tmp.mount
 
 # Clean up
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/*
