@@ -85,7 +85,11 @@ RUN bash /tmp/setup-ssh.sh
 RUN bash /tmp/setup-serial.sh
 RUN bash /tmp/setup-network.sh
 RUN bash /tmp/setup-kdump.sh
-RUN bash /tmp/setup-services.sh unattended-upgrades.service
+# Debian 13 enables tmp.mount by default (tmpfs at 50% of RAM).  Mask it
+# so /tmp stays on the root disk like the other targets: lctl dk writes
+# hundreds of MB to /tmp during test suites, which otherwise fills /tmp
+# and OOMs the guest.
+RUN bash /tmp/setup-services.sh unattended-upgrades.service tmp.mount
 
 # Clean up
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/*
