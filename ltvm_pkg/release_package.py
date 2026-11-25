@@ -691,7 +691,7 @@ def refuse_site_mirrors(
                 "image",
                 "inspect",
                 "--format",
-                f'{{{{index .Labels "{mirrors.LABEL}"}}}}',
+                f'{{{{with .Labels}}}}{{{{index . "{mirrors.LABEL}"}}}}{{{{end}}}}',
                 container_ref,
             ],
             capture_output=True,

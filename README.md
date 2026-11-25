@@ -343,10 +343,14 @@ a mirror makes nothing stale (`ltvm build ... --force` rebuilds with the
 new one), and `ltvm target publish` refuses a build container made with
 mirrors, so a site's internal hosts never reach a release.  Minimal
 Debian/Ubuntu base images ship without `ca-certificates`, so use `http://`
-mirrors there (apt still verifies package signatures) or set `ca` to a
-PEM bundle.  Downloads that are not package repos -- the kernel SRPM,
-GitHub, PyPI, whamcloud -- still go to their own hosts, through the
-usual proxy variables.
+mirrors there (apt still verifies package signatures) or set `ca` to a PEM
+bundle.  Because apt's per-host `CaInfo` replaces its trust bundle for
+every `https://` mirror host, a site combining a private `ca` with a public
+`https://` Debian/Ubuntu mirror should either include the system roots in
+the `ca` PEM bundle or leave the public mirror on `http://`.
+Downloads that are not package repos -- the kernel SRPM, GitHub, PyPI,
+whamcloud -- still go to their own hosts, through the usual proxy
+variables.
 
 Lustre is configured `--with-o2ib=yes`, building ko2iblnd against the
 kernel's own InfiniBand stack, which every kernel gets from the shared

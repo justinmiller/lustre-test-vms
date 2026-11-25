@@ -528,8 +528,10 @@ class TestWiring:
         clean = MagicMock(returncode=0, stdout="<no value>\n", stderr="")
         with patch(
             "ltvm_pkg.release_package.subprocess.run", return_value=clean
-        ):
+        ) as run_mock:
             release_package.refuse_site_mirrors("ltvm-build-rocky9")
+        fmt = run_mock.call_args.args[0][4]
+        assert fmt == '{{with .Labels}}{{index . "ltvm.site-mirrors"}}{{end}}'
 
         mirrored = MagicMock(returncode=0, stdout="rocky,ca\n", stderr="")
         with (
