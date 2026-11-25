@@ -939,7 +939,7 @@ class TestWaitForSshErrors:
 
 
 class TestDeploySshKey:
-    """deploy_ssh_key raises SystemExit (via die()) on SSH timeout."""
+    """deploy_ssh_key deduplicates keys, preserves perms, and propagates errors."""
 
     def test_raises_on_timeout_expired(self, tmp_path: Path) -> None:
         """When run_ssh raises TimeoutExpired, deploy_ssh_key calls die()."""
@@ -963,6 +963,131 @@ class TestDeploySshKey:
         ):
             with pytest.raises(SystemExit):
                 deploy_ssh_key("192.168.100.99")
+
+    def _append(self, home: Path, key: str) -> None:
+        """Run the script deploy_ssh_key sends, with HOME=home."""
+        from ltvm_pkg.vm_net import _ADD_AUTHORIZED_KEY_SCRIPT
+
+        subprocess.run(
+            ["bash", "-c", _ADD_AUTHORIZED_KEY_SCRIPT],
+            input=key + "\n",
+            text=True,
+            check=True,
+            env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+        )
+
+    def test_key_is_added_once(self, tmp_path: Path) -> None:
+        """Every start deploys the key; it used to pile up a copy each time."""
+        key = "ssh-ed25519 AAAA user@host"
+        self._append(tmp_path, key)
+        self._append(tmp_path, key)
+        ak = tmp_path / ".ssh" / "authorized_keys"
+        assert ak.read_text() == key + "\n"
+        assert (tmp_path / ".ssh").stat().st_mode & 0o777 == 0o700
+        assert ak.stat().st_mode & 0o777 == 0o600
+
+    def test_existing_crlf_key_is_not_duplicated(self, tmp_path: Path) -> None:
+        """A key already present with CRLF endings is recognized as present."""
+        key = "ssh-ed25519 AAAA crlf@host"
+        ssh = tmp_path / ".ssh"
+        ssh.mkdir()
+        (ssh / "authorized_keys").write_bytes((key + "\r\n").encode())
+        self._append(tmp_path, key)
+        assert (ssh / "authorized_keys").read_bytes() == (key + "\r\n").encode()
+
+    def test_shared_key_is_kept(self, tmp_path: Path) -> None:
+        """The image's inter-VM key stays, and is not joined to ours."""
+        ssh = tmp_path / ".ssh"
+        ssh.mkdir()
+        (ssh / "authorized_keys").write_text("ssh-ed25519 SHARED ltvm")
+        self._append(tmp_path, "ssh-ed25519 AAAA user@host")
+        assert (ssh / "authorized_keys").read_text().splitlines() == [
+            "ssh-ed25519 SHARED ltvm",
+            "ssh-ed25519 AAAA user@host",
+        ]
+
+    def test_multiline_keys_deduplicated_individually(
+        self, tmp_path: Path
+    ) -> None:
+        """Multi-line key input adds each missing line without skipping new ones."""
+        k1 = "ssh-ed25519 AAAA first@host"
+        k2 = "ssh-ed25519 BBBB second@host"
+        self._append(tmp_path, k1)
+        self._append(tmp_path, f"{k1}\n\n   \n{k2}")
+        ak = tmp_path / ".ssh" / "authorized_keys"
+        assert ak.read_text().splitlines() == [k1, k2]
+
+    def test_empty_or_whitespace_pubkey_skips_ssh(self, tmp_path: Path) -> None:
+        """An empty or whitespace-only id_*.pub does not invoke ssh."""
+        from ltvm_pkg.vm_net import deploy_ssh_key
+
+        fake_ssh_dir = tmp_path / ".ssh"
+        fake_ssh_dir.mkdir()
+        (fake_ssh_dir / "id_ed25519.pub").write_text("   \n\t\n")
+
+        with (
+            patch(
+                "ltvm_pkg.vm_net._real_user_ssh_dir",
+                return_value=("testuser", fake_ssh_dir),
+            ),
+            patch("ltvm_pkg.vm_net.subprocess.run") as mock_run,
+        ):
+            deploy_ssh_key("192.168.100.99")
+            mock_run.assert_not_called()
+
+        # Adding a non-empty subsequent key file falls through to it.
+        second = "ssh-rsa AAAAfallback user@host"
+        (fake_ssh_dir / "id_rsa.pub").write_text(f"{second}\n")
+        with (
+            patch(
+                "ltvm_pkg.vm_net._real_user_ssh_dir",
+                return_value=("testuser", fake_ssh_dir),
+            ),
+            patch(
+                "ltvm_pkg.vm_net.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as mock_run,
+        ):
+            deploy_ssh_key("192.168.100.99")
+            mock_run.assert_called_once()
+            assert mock_run.call_args.kwargs["input"] == f"{second}\n"
+
+    def test_special_chars_and_write_error_propagation(
+        self, tmp_path: Path
+    ) -> None:
+        """Special chars are literal; write failures on earlier lines fail."""
+        from ltvm_pkg.vm_net import _ADD_AUTHORIZED_KEY_SCRIPT
+
+        weird = 'ssh-ed25519 AAAA -e "foo" $(id) .*[a-z]\\bar'
+        self._append(tmp_path, weird)
+        self._append(tmp_path, weird)
+        ak = tmp_path / ".ssh" / "authorized_keys"
+        assert ak.read_text() == weird + "\n"
+
+        # Verify a write failure on line 1 is NOT masked when line 2 exists.
+        import os
+
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            home2 = tmp_path / "ro"
+            ssh2 = home2 / ".ssh"
+            ssh2.mkdir(parents=True)
+            ak2 = ssh2 / "authorized_keys"
+            ak2.write_text("ssh-ed25519 EXISTING\n")
+            ak2.chmod(0o400)
+            loop_only = _ADD_AUTHORIZED_KEY_SCRIPT[
+                _ADD_AUTHORIZED_KEY_SCRIPT.index("while ") :
+            ]
+            try:
+                r = subprocess.run(
+                    ["bash", "-c", loop_only],
+                    input="ssh-ed25519 NEW\nssh-ed25519 EXISTING\n",
+                    text=True,
+                    capture_output=True,
+                    env={"HOME": str(home2), "PATH": "/usr/bin:/bin"},
+                )
+                assert r.returncode != 0
+            finally:
+                ak2.chmod(0o600)
 
 
 class TestResolveOsArtifactsPerKernel:
