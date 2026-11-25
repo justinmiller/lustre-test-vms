@@ -4537,6 +4537,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(line)
         issues += 1
 
+    # Package mirrors for the builds ([mirrors] in /etc/ltvm.conf).
+    from . import mirrors
+
+    mirror_issues, mirror_notes = mirrors.doctor_report()
+    for line in mirror_notes:
+        print(line)
+    for line in mirror_issues:
+        print(line)
+        issues += 1
+
     _, ssh_dir = _real_user_ssh_dir()
     ssh_cfg = ssh_dir / "config"
     if ssh_cfg.exists():

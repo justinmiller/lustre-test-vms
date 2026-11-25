@@ -1,6 +1,13 @@
 ARG BASE_IMAGE=debian:13
 FROM ${BASE_IMAGE}
 
+# The site's package mirrors and CA, from [mirrors] in /etc/ltvm.conf;
+# a no-op without them (common/ltvm-mirrors.sh).
+ARG LTVM_MIRRORS=
+ARG LTVM_MIRROR_CA_HASH=
+COPY common/ltvm-mirrors.sh /usr/local/sbin/ltvm-mirrors
+RUN --mount=type=secret,id=ltvm_mirror_ca,target=/run/secrets/ltvm_mirror_ca bash /usr/local/sbin/ltvm-mirrors apply
+
 # Debian 13 (trixie) build container for kernel and Lustre builds.
 
 ENV DEBIAN_FRONTEND=noninteractive

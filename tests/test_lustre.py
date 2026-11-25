@@ -299,7 +299,7 @@ class TestKernelChangeDistclean:
         captured_scripts = []
 
         def mock_run(cmd, *args, **kwargs):
-            if "podman" in cmd[0]:
+            if "podman" in cmd[0] and len(cmd) > 1 and cmd[1] == "run":
                 captured_scripts.append(cmd[-1])
                 r = MagicMock()
                 r.returncode = 0
@@ -367,7 +367,7 @@ class TestTreeClaim:
         captured: list[str] = []
 
         def mock_run(cmd, *args, **kwargs):
-            if "podman" in cmd[0]:
+            if "podman" in cmd[0] and len(cmd) > 1 and cmd[1] == "run":
                 captured.append(cmd[-1])
             r = MagicMock()
             r.returncode = 0
@@ -954,7 +954,7 @@ class TestO2ibDetection:
         captured: list[str] = []
 
         def mock_run(cmd, *args, **kwargs):
-            if "podman" in cmd[0]:
+            if "podman" in cmd[0] and len(cmd) > 1 and cmd[1] == "run":
                 captured.append(cmd[-1])
             return _make_completed(0)
 

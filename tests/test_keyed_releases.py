@@ -1438,6 +1438,7 @@ def _publish(
             "ltvm_pkg.release_package.check_build_container",
             return_value="sha1",
         ),
+        patch("ltvm_pkg.release_package.refuse_site_mirrors"),
     ):
         rc = cli_mod.cmd_publish(_pub_ns(**kw))
     return rc, api, up, rm
@@ -2154,6 +2155,8 @@ def _podman(image_id: str | None) -> tuple[list[list[str]], Any]:
     def run(cmd: list[str], **kw: Any) -> Any:
         calls.append(cmd)
         if cmd[:3] == ["podman", "image", "inspect"]:
+            if any(".Labels" in arg for arg in cmd):
+                return MagicMock(returncode=0, stdout="\n")
             return MagicMock(
                 returncode=0 if image_id else 1,
                 stdout=f"{image_id}\n" if image_id else "",
@@ -2831,6 +2834,29 @@ def test_a_dry_run_checks_the_container_packaging_would_export(
     check.assert_called_once_with(
         "rocky9", artifacts.output_dir, "x86_64", "base"
     )
+
+
+def test_dry_run_refuses_site_mirrored_container(
+    artifacts: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with (
+        _checkout(),
+        patch.object(rt, "checkout_problem", return_value=None),
+        patch.object(cli_mod, "_gh_release_info", return_value=_absent()),
+        patch.object(cli_mod, "_gh_api", return_value=[]),
+        patch(
+            "ltvm_pkg.release_package.check_build_container",
+            return_value="sha1",
+        ),
+        patch(
+            "ltvm_pkg.release_package.refuse_site_mirrors",
+            side_effect=RuntimeError("built with this site's package mirrors"),
+        ) as refuse,
+    ):
+        rc = cli_mod.cmd_publish(_pub_ns(dry_run=True, json=False))
+    assert rc == EXIT_ERROR
+    assert "package mirrors" in capsys.readouterr().err
+    refuse.assert_called_once_with("sha1", display_name="ltvm-build-rocky9")
 
 
 def test_the_container_check_is_read_only(tmp_path: Path) -> None:

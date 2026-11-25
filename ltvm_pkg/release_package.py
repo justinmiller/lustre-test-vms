@@ -670,6 +670,57 @@ def check_build_container(
     return str(want)
 
 
+def refuse_site_mirrors(
+    container_ref: str, *, display_name: str | None = None
+) -> None:
+    """Refuse to ship a build container that has a site's mirrors in it.
+
+    It keeps them, for the dnf and apt its builds run (ltvm_pkg/mirrors.py),
+    and the repo files, CA and image history would carry a site's
+    internal hosts into a public release.  Fails closed when podman
+    cannot inspect the container so a transient failure cannot slip a
+    site-mirrored container into a release.
+    """
+    from . import mirrors
+
+    name = display_name or container_ref
+    try:
+        r = subprocess.run(
+            [
+                "podman",
+                "image",
+                "inspect",
+                "--format",
+                f'{{{{index .Labels "{mirrors.LABEL}"}}}}',
+                container_ref,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(
+            f"Cannot verify whether build container '{name}' carries site "
+            f"package mirrors: podman image inspect failed: {e}"
+        ) from e
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip()
+        raise RuntimeError(
+            f"Cannot verify whether build container '{name}' carries site "
+            f"package mirrors: podman image inspect exited {r.returncode}"
+            + (f" ({detail})" if detail else "")
+        )
+    keys = r.stdout.strip()
+    if keys and keys != "<no value>":
+        raise RuntimeError(
+            f"Build container '{name}' was built with this site's "
+            f"package mirrors ({keys}), which a release must not carry.\n"
+            f"  Rebuild it with LTVM_NO_MIRRORS=1 (or [mirrors] and "
+            f"LTVM_MIRROR_* unset): LTVM_NO_MIRRORS=1 ltvm build container "
+            f"<target> --force"
+        )
+
+
 def export_build_container(
     target_name: str,
     output_dir: str | Path,
@@ -694,6 +745,8 @@ def export_build_container(
     container_dir.mkdir(parents=True, exist_ok=True)
     image_tar = container_dir / "image.tar"
     want = check_build_container(target_name, output_dir, arch, variant)
+
+    refuse_site_mirrors(want, display_name=container_tag)
 
     print(f"  Exporting build container '{container_tag}' -> {image_tar}")
     if image_tar.exists():
