@@ -1388,10 +1388,17 @@ def _shmrdma_lines(
         shutil.copy2(SRC_DIR / rel, prov / Path(rel).name)
     # Never from the layer cache: one that installed nothing (GitHub
     # unreachable) would stay so.  It follows this kernel's module, so
-    # no other image shares the layer anyway.
+    # no other image shares the layer anyway.  Mount a persistent shared
+    # cache for the rdma-core source tarball (build-provider.sh writes via
+    # mktemp + atomic mv, so parallel image builds do not serialize).
+    mount_flags = (
+        "--mount=type=cache,id=ltvm-rdma-core,"
+        "target=/var/cache/ltvm-rdma-core,sharing=shared"
+    )
     lines += [
         f"COPY shmrdma/provider {PROVIDER_DIR}",
-        f"RUN : build {time.time_ns()}; "
+        f"RUN {mount_flags} : build {time.time_ns()}; "
+        "LTVM_RDMA_CORE_CACHE=/var/cache/ltvm-rdma-core "
         f"bash {PROVIDER_DIR}/build-provider.sh {PROVIDER_DIR} || "
         "echo 'shmrdma provider: not installed; the device serves kernel "
         "users only'",

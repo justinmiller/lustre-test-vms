@@ -2557,6 +2557,128 @@ class TestImageLines:
         assert lines == []
         build.assert_not_called()
 
+    def test_provider_run_mounts_shared_rdma_core_cache_only(
+        self, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg.image_build import _shmrdma_lines
+
+        ko = tmp_path / "built.ko"
+        ko.write_bytes(b"ko")
+        deb_cfg = MagicMock()
+        deb_cfg.os_family = "debian"
+        deb_cfg.name = "debian13"
+        rhel_cfg = MagicMock()
+        rhel_cfg.os_family = "rhel"
+        rhel_cfg.name = "rocky9"
+
+        with patch("ltvm_pkg.shmrdma.build_kmod", return_value=ko):
+            deb_dir = tmp_path / "deb"
+            deb_dir.mkdir()
+            deb_lines = _shmrdma_lines(
+                deb_cfg, "k", "6.12.0", deb_dir, cross=False, mofed=False
+            )
+            rhel_dir = tmp_path / "rhel"
+            rhel_dir.mkdir()
+            rhel_lines = _shmrdma_lines(
+                rhel_cfg, "k", "5.14.0", rhel_dir, cross=False, mofed=False
+            )
+
+        for run_line in (
+            [x for x in deb_lines if "build-provider.sh" in x][0],
+            [x for x in rhel_lines if "build-provider.sh" in x][0],
+        ):
+            assert (
+                "--mount=type=cache,id=ltvm-rdma-core,"
+                "target=/var/cache/ltvm-rdma-core,sharing=shared" in run_line
+            )
+            assert "LTVM_RDMA_CORE_CACHE=/var/cache/ltvm-rdma-core" in run_line
+            # Never mount ltvm-apt-* after docker-clean has been restored.
+            assert "ltvm-apt-" not in run_line
+
+    def test_build_provider_rdma_core_cache_behavior(
+        self, tmp_path: Path
+    ) -> None:
+        """Exercise LTVM_RDMA_CORE_CACHE hit, miss/populate, and corrupt removal."""
+        import tarfile
+
+        script = (
+            shmrdma.SRC_DIR / "provider" / "build-provider.sh"
+        ).read_text()
+        subprocess.run(
+            [
+                "bash",
+                "-n",
+                str(shmrdma.SRC_DIR / "provider" / "build-provider.sh"),
+            ],
+            check=True,
+        )
+        # Extract the cache/fetch block and run it with a fake curl.
+        start = script.index('cache="${LTVM_RDMA_CORE_CACHE:-}"')
+        end = script.index('tree="$work/rdma-core-$ver"')
+        snippet = script[start:end]
+
+        src_dir = tmp_path / "tar_src" / "rdma-core-56.1"
+        src_dir.mkdir(parents=True)
+        (src_dir / "CMakeLists.txt").write_text("ok\n")
+        good_tar = tmp_path / "good.tar.gz"
+        with tarfile.open(good_tar, "w:gz") as tf:
+            tf.add(src_dir, arcname="rdma-core-56.1")
+
+        cache_dir = tmp_path / "cache"
+
+        def run_snippet(curl_body: str) -> subprocess.CompletedProcess[str]:
+            work = tmp_path / "work"
+            if work.exists():
+                import shutil
+
+                shutil.rmtree(work)
+            work.mkdir()
+            bash_code = (
+                "set -euo pipefail\n"
+                'log() { echo "$*" >&2; }\n'
+                f'work="{work}"\n'
+                'ver="56.1"\n'
+                f'export LTVM_RDMA_CORE_CACHE="{cache_dir}"\n'
+                f"curl() {{ {curl_body}; }}\n"
+                f"{snippet}\n"
+            )
+            return subprocess.run(
+                ["bash", "-c", bash_code], capture_output=True, text=True
+            )
+
+        # 1. Miss: curl fetches tarball and populates cache atomically.
+        r1 = run_snippet(
+            f'while [ "$1" != "-o" ]; do shift; done; cp "{good_tar}" "$2"'
+        )
+        assert r1.returncode == 0, r1.stderr
+        cached = cache_dir / "rdma-core-56.1.tar.gz"
+        assert cached.is_file()
+        assert list(cache_dir.glob(".rdma-core-*")) == []
+
+        # 2. Hit: uses cached tarball without invoking curl.
+        r2 = run_snippet("echo SHOULD_NOT_CURL >&2; return 1")
+        assert r2.returncode == 0, r2.stderr
+        assert "using cached" in r2.stderr
+
+        # 3. Corrupt cache + failing curl removes corrupt file cleanly.
+        cached.write_bytes(b"corrupt")
+        r3 = run_snippet("return 22")
+        assert r3.returncode == 0
+        assert not cached.exists()
+
+    def test_cmake_and_pkg_config_preinstalled_in_base_images(self) -> None:
+        pkgs = [
+            ln.strip()
+            for ln in (
+                shmrdma.SRC_DIR.parent / "targets/common/packages-base.txt"
+            )
+            .read_text()
+            .splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        assert "cmake" in pkgs
+        assert "pkgconf-pkg-config" in pkgs
+
     def test_left_out_of_a_cross_build(self, tmp_path: Path) -> None:
         lines, build = self._lines(tmp_path, cross=True)
         assert lines == []
