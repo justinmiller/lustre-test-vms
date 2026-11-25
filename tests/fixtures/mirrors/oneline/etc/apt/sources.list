@@ -1,5 +1,0 @@
-# a one-line sources.list
-deb http://deb.debian.org/debian bookworm main
-deb [arch=amd64 signed-by=/usr/share/keyrings/k.gpg] http://deb.debian.org/debian bookworm-updates main
-deb http://deb.debian.org/debian-security bookworm-security main
-deb http://example.com/other bookworm main

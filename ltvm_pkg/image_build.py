@@ -232,10 +232,7 @@ def _prebuild_tools_native(
                 f"KERNEL_DEB_SOURCE={target_config.kernel_deb_source}",
             ]
         with mirrors.podman_build_cwd() as build_cwd:
-            cmd += (
-                mirrors.build_args(build_cwd, os_family=target_config.os_family)
-                + mirrors.label_args()
-            )
+            cmd += mirrors.build_args() + mirrors.label_args()
             cmd += [
                 "-f",
                 str(build_dockerfile.resolve()),
@@ -267,9 +264,6 @@ def _prebuild_tools_native(
     # succeeded and the image shipped silently missing test tools, with
     # the build reported green.  lustre_build's container script has
     # had `set -e` all along.
-    drift = mirrors.container_drift(build_tag)
-    if drift:
-        log.warning("%s", drift)
     leap_oss, leap_sle = leap_sysroot_repos(arch)
     script = (
         "set -e\n"
@@ -869,9 +863,7 @@ def _build_base_layers(
                 *platform_args,
                 "--build-arg",
                 f"BASE_IMAGE={target_config.container_image}",
-                *mirrors.build_args(
-                    build_cwd, os_family=target_config.os_family
-                ),
+                *mirrors.build_args(),
                 "-t",
                 tag,
                 "-f",

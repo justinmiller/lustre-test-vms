@@ -205,12 +205,6 @@ def build_mofed_kmods(
     for rpm in out_dir.glob("*.rpm"):
         rpm.unlink()
 
-    from . import mirrors
-
-    drift = mirrors.container_drift(container_tag)
-    if drift:
-        log.warning("%s", drift)
-
     log.info(
         "Building MOFED kmods for %s (kernel=%s, mofed=%s)...",
         tc.name,

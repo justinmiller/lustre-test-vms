@@ -903,12 +903,6 @@ def _run_build(
     staging_dir = out_dir / "staging"
     build_tree = tc.kernel_output_dir(kernel) / "build-tree"
 
-    from . import mirrors
-
-    drift = mirrors.container_drift(tc.container_tag)
-    if drift:
-        log.warning("%s", drift)
-
     log.info("Building ZFS %s for %s (kernel=%s)...", ver, tc.name, kver)
     t0 = time.monotonic()
 

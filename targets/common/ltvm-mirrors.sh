@@ -9,11 +9,8 @@
 #                        joined by ";": each repo URL starting with
 #                        <upstream> is rewritten to start with the
 #                        mirror(s) instead
-#   LTVM_MIRROR_CA_HASH  "site:<hash>" for an explicit site CA, or
-#                        "host" for the host's system CA bundle
-#                        (used only to bootstrap https:// apt mirrors in
-#                        minimal Debian/Ubuntu images without
-#                        ca-certificates); empty when no CA is passed
+#   LTVM_MIRROR_CA_HASH  short sha256 of the configured CA PEM bundle,
+#                        empty when no CA is configured
 #   secret ltvm_mirror_ca
 #                        PEM bundle mounted at /run/secrets/ltvm_mirror_ca
 #                        during apply (LTVM_MIRROR_CA_FILE overrides the
@@ -22,9 +19,10 @@
 # Both empty -- no [mirrors] -- and every subcommand is a no-op, so the
 # build is the stock one.
 #
-#   apply     Rewrite the dnf, apt and zypper repo files that name an
-#             upstream, noting each line it changes.  Safe to run again:
-#             the rhel Dockerfiles do, after epel-release adds its repos.
+#   apply     Rewrite the dnf, apt (deb822 .sources), and zypper repo
+#             files that name an upstream, noting each line it changes.
+#             Safe to run again: the rhel Dockerfiles do, after
+#             epel-release adds its repos.
 #   restore   Undo those lines and drop the CA.  The image build's last
 #             stage runs it, so a VM gets the distro's own repos: the
 #             mirrors are for building, and the build container keeps
@@ -39,7 +37,7 @@
 #
 # Only the first mirror is used where the format has room for one:
 # zypper's baseurl and dnf-epel.  dnf's baseurl and apt's deb822 URIs
-# take them all, and a one-line apt source gets a line per mirror.
+# take them all.
 #
 # LTVM_MIRRORS_ROOT prefixes every path, for the tests; with it set the
 # trust-store tools are not run.
@@ -49,10 +47,8 @@ ROOT=${LTVM_MIRRORS_ROOT:-}
 STATE=$ROOT/var/lib/ltvm-mirrors
 CA_DIR=/etc/ltvm-mirrors
 CA_FILE=$CA_DIR/ca.pem
-APT_CA_FILE=$CA_DIR/apt-ca.pem
 CA_NAME=ltvm-mirror-ca
 CA_SRC=${LTVM_MIRROR_CA_FILE:-/run/secrets/ltvm_mirror_ca}
-HOST_CA_MARKER='# --- ltvm-host-ca-bundle ---'
 
 UPS=()
 MIRS=()
@@ -92,18 +88,15 @@ rewrite() {
 }
 
 # Note in LOG (FILE.ltvm-edits) that a rewrite of FILE wrote line NEW
-# where it had OLD, in the section SEC (the last "[...]" line before it,
-# "" for none), for restore to undo.  OLD "-" means NEW was added, and
-# restore drops it; a real OLD line is stored with a "=" in front.
+# where it had OLD, in section SEC (the last "[...]" line before it,
+# "" for none), for restore to undo.
 edit() {
 	printf '%s\n%s\n%s\n' "$2" "$3" "$4" >>"$1"
 }
 
 # Replace FILE's contents with those of FILE.ltvm-new when the rewrite
 # changed a line, keeping FILE's inode and mode, and add its edits to
-# FILE's record.  The record says whether anything changed, not cmp:
-# apply runs first in a build, and rockylinux's base images have neither
-# diffutils nor findutils.
+# FILE's record.
 replace() {
 	local f=$1 rel=${1#"$ROOT"}
 	if [ -s "$f.ltvm-edits" ]; then
@@ -138,8 +131,7 @@ undo_edits() {
 			[ "${used[i]}" -eq 0 ] || continue
 			[ "${secs[i]}" = "$sec" ] && [ "${news[i]}" = "$line" ] || continue
 			used[i]=1
-			[ "${olds[i]}" != - ] || continue 2
-			line=${olds[i]#=}
+			line=${olds[i]}
 			break
 		done
 		printf '%s\n' "$line"
@@ -202,7 +194,7 @@ rewrite_dnf() {
 			mirrorlist=* | metalink=*) new="#$line" ;;
 			esac
 		fi
-		[ "$new" = "$line" ] || edit "$log" "$sec" "$new" "=$line"
+		[ "$new" = "$line" ] || edit "$log" "$sec" "$new" "$line"
 		printf '%s\n' "$new"
 	done <"$f" >"$f.ltvm-new"
 	replace "$f"
@@ -225,28 +217,8 @@ rewrite_deb822() {
 			new="URIs:$out"
 			;;
 		esac
-		[ "$new" = "$line" ] || edit "$log" "" "$new" "=$line"
+		[ "$new" = "$line" ] || edit "$log" "" "$new" "$line"
 		printf '%s\n' "$new"
-	done <"$f" >"$f.ltvm-new"
-	replace "$f"
-}
-
-# apt, one-line (sources.list, .list): one line per mirror.
-rewrite_list() {
-	local f=$1 log=$1.ltvm-edits line m new old
-	local re='^(deb(-src)?[[:space:]]+(\[[^]]*\][[:space:]]+)?)([^[:space:]]+)(.*)$'
-	while IFS= read -r line || [ -n "$line" ]; do
-		if [[ $line =~ $re ]] && rewrite "${BASH_REMATCH[4]}"; then
-			old="=$line"
-			for m in $REPLY; do
-				new=${BASH_REMATCH[1]}$m${BASH_REMATCH[5]}
-				edit "$log" "" "$new" "$old"
-				old=-
-				printf '%s\n' "$new"
-			done
-			continue
-		fi
-		printf '%s\n' "$line"
 	done <"$f" >"$f.ltvm-new"
 	replace "$f"
 }
@@ -264,40 +236,19 @@ rewrite_zypp() {
 			fi
 			;;
 		esac
-		[ "$new" = "$line" ] || edit "$log" "$sec" "$new" "=$line"
+		[ "$new" = "$line" ] || edit "$log" "$sec" "$new" "$line"
 		printf '%s\n' "$new"
 	done <"$f" >"$f.ltvm-new"
 	replace "$f"
 }
 
-# Put the CA where each trust store looks.  apt is also told, per mirror
-# host, to verify against it directly: Debian/Ubuntu base images ship no
-# ca-certificates, and apt needs the CA before it can install that.
-# Mode is "site" (explicit site CA -> install everywhere) or "host"
-# (host's system CA bundle -> apt CaInfo only, and only when the base
-# image has no /etc/ssl/certs/ca-certificates.crt yet).  When mode is
-# "site" and the secret appends the host CA bundle after HOST_CA_MARKER,
-# system trust stores receive only the site CA while apt's CaInfo gets
-# the combined bundle so public-CA https:// mirrors work too.
+# Install the configured CA bundle where each trust store looks, plus
+# apt's per-host CaInfo (minimal Debian/Ubuntu base images ship without
+# ca-certificates, so apt needs the CA before it can install that).
 install_ca() {
-	local mode=$1 ms m host apt_ca=$CA_FILE
-	[ -r "$CA_SRC" ] || return 0
-	if [ "$mode" = host ]; then
-		[ -d "$ROOT/etc/apt" ] || return 0
-		[ ! -e "$ROOT/etc/ssl/certs/ca-certificates.crt" ] || return 0
-	fi
+	local ms m host
 	mkdir -p "$ROOT$CA_DIR"
-	if [ "$mode" = site ] && grep -qxF -- "$HOST_CA_MARKER" "$CA_SRC"; then
-		sed "/^$HOST_CA_MARKER$/,\$d" "$CA_SRC" >"$ROOT$CA_FILE"
-		if [ -d "$ROOT/etc/apt" ]; then
-			cp "$CA_SRC" "$ROOT$APT_CA_FILE"
-			chmod 0644 "$ROOT$APT_CA_FILE"
-			created "$APT_CA_FILE"
-			apt_ca=$APT_CA_FILE
-		fi
-	else
-		cp "$CA_SRC" "$ROOT$CA_FILE"
-	fi
+	cp "$CA_SRC" "$ROOT$CA_FILE"
 	# Build secrets mount 0400 root:root, and apt's https method runs as
 	# the unprivileged _apt user.
 	chmod 0644 "$ROOT$CA_FILE"
@@ -310,20 +261,15 @@ install_ca() {
 				host=${m#https://}
 				host=${host%%/*}
 				host=${host%%:*}
-				printf 'Acquire::https::%s::CaInfo "%s";\n' "$host" "$apt_ca"
+				printf 'Acquire::https::%s::CaInfo "%s";\n' "$host" "$CA_FILE"
 			done
 		done | sort -u >"$ROOT/etc/apt/apt.conf.d/99ltvm-mirrors"
 		created /etc/apt/apt.conf.d/99ltvm-mirrors
-		if [ "$mode" = site ]; then
-			# ca-certificates' own postinst picks this up when it is
-			# installed later.
-			mkdir -p "$ROOT/usr/local/share/ca-certificates"
-			cp "$ROOT$CA_FILE" "$ROOT/usr/local/share/ca-certificates/$CA_NAME.crt"
-			chmod 0644 "$ROOT/usr/local/share/ca-certificates/$CA_NAME.crt"
-			created "/usr/local/share/ca-certificates/$CA_NAME.crt"
-		fi
+		mkdir -p "$ROOT/usr/local/share/ca-certificates"
+		cp "$ROOT$CA_FILE" "$ROOT/usr/local/share/ca-certificates/$CA_NAME.crt"
+		chmod 0644 "$ROOT/usr/local/share/ca-certificates/$CA_NAME.crt"
+		created "/usr/local/share/ca-certificates/$CA_NAME.crt"
 	fi
-	[ "$mode" = site ] || return 0
 	if [ -d "$ROOT/etc/pki/ca-trust/source/anchors" ]; then
 		cp "$ROOT$CA_FILE" "$ROOT/etc/pki/ca-trust/source/anchors/$CA_NAME.pem"
 		chmod 0644 "$ROOT/etc/pki/ca-trust/source/anchors/$CA_NAME.pem"
@@ -347,7 +293,7 @@ update_trust() {
 }
 
 cmd_apply() {
-	local f ca_mode
+	local f
 	[ ${#UPS[@]} -gt 0 ] || [ -n "${LTVM_MIRROR_CA_HASH:-}" ] || [ -r "$CA_SRC" ] || return 0
 	mkdir -p "$STATE"
 	if [ ${#UPS[@]} -gt 0 ]; then
@@ -359,33 +305,22 @@ cmd_apply() {
 			[ -f "$f" ] || continue
 			rewrite_deb822 "$f"
 		done
-		for f in "$ROOT"/etc/apt/sources.list "$ROOT"/etc/apt/sources.list.d/*.list; do
-			[ -f "$f" ] || continue
-			rewrite_list "$f"
-		done
 		for f in "$ROOT"/etc/zypp/repos.d/*.repo; do
 			[ -f "$f" ] || continue
 			rewrite_zypp "$f"
 		done
 	fi
 	if [ -n "${LTVM_MIRROR_CA_HASH:-}" ] && [ ! -e "$ROOT$CA_FILE" ]; then
-		case ${LTVM_MIRROR_CA_HASH} in
-		host | host:*) ca_mode=host ;;
-		*) ca_mode=site ;;
-		esac
-		if [ "$ca_mode" = site ] \
-			|| { [ -d "$ROOT/etc/apt" ] && [ ! -e "$ROOT/etc/ssl/certs/ca-certificates.crt" ]; }; then
-			if [ ! -r "$CA_SRC" ]; then
-				echo "ltvm-mirrors: CA configured (LTVM_MIRROR_CA_HASH=$LTVM_MIRROR_CA_HASH) but secret $CA_SRC is missing" >&2
-				exit 1
-			fi
-			install_ca "$ca_mode"
+		if [ ! -r "$CA_SRC" ]; then
+			echo "ltvm-mirrors: CA configured (LTVM_MIRROR_CA_HASH=$LTVM_MIRROR_CA_HASH) but secret $CA_SRC is missing" >&2
+			exit 1
 		fi
+		install_ca
 	elif [ -r "$CA_SRC" ] && [ ! -e "$ROOT$CA_FILE" ]; then
-		install_ca site
+		install_ca
 	fi
 	echo "ltvm-mirrors: repos now point at the site mirrors:"
-	grep -rhE '^(baseurl=|URIs:|deb )' "$ROOT"/etc/yum.repos.d "$ROOT"/etc/apt \
+	grep -rhE '^(baseurl=|URIs:)' "$ROOT"/etc/yum.repos.d "$ROOT"/etc/apt \
 		"$ROOT"/etc/zypp/repos.d 2>/dev/null | sort -u | sed 's/^/  /' || true
 }
 

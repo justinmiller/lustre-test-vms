@@ -1238,11 +1238,6 @@ def _build_in_container(
     # packages install under /usr/lib/<multiarch-triple>, so no separate
     # sysroot is needed.
     if cross_compiling:
-        from . import mirrors
-
-        drift = mirrors.container_drift(container_tag)
-        if drift:
-            print(f"warning: {drift}", file=sys.stderr)
         sysroot = f"/sysroot-{xinfo.target_arch}"
         script_parts.append(
             f"echo '--- Installing {xinfo.triple} cross-compiler "

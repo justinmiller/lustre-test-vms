@@ -916,10 +916,7 @@ def _ensure_container_image(
     superseded.note(base_tag)
     with mirrors.podman_build_cwd() as build_cwd:
         # A variant container is built FROM this one and inherits both.
-        cmd += (
-            mirrors.build_args(build_cwd, os_family=target_config.os_family)
-            + mirrors.label_args()
-        )
+        cmd += mirrors.build_args() + mirrors.label_args()
         cmd += [
             "-f",
             str(base_dockerfile.resolve()),

@@ -340,12 +340,13 @@ The mirrors are for building.  The build container keeps them, for the
 dnf and apt that the ZFS and cross builds run in it, but a VM image gets
 the distro's own repos back, and no CA, before it is exported.  Changing
 a mirror makes nothing stale (`ltvm build ... --force` rebuilds with the
-new one; a cross build of Lustre warns when its build container was made
-with other mirror settings, since it adds the sysroot's repos with the
-new ones), and `ltvm target publish` refuses a build container made with
-mirrors, so a site's internal hosts never reach a release.  Downloads
-that are not package repos -- the kernel SRPM, GitHub, PyPI, whamcloud
--- still go to their own hosts, through the usual proxy variables.
+new one), and `ltvm target publish` refuses a build container made with
+mirrors, so a site's internal hosts never reach a release.  Minimal
+Debian/Ubuntu base images ship without `ca-certificates`, so use `http://`
+mirrors there (apt still verifies package signatures) or set `ca` to a
+PEM bundle.  Downloads that are not package repos -- the kernel SRPM,
+GitHub, PyPI, whamcloud -- still go to their own hosts, through the
+usual proxy variables.
 
 Lustre is configured `--with-o2ib=yes`, building ko2iblnd against the
 kernel's own InfiniBand stack, which every kernel gets from the shared

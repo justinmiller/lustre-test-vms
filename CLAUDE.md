@@ -418,18 +418,14 @@ replaces in README.md).  Each key stands for fixed upstream prefixes in
   declares the two ARGs and runs `ltvm-mirrors apply`
   ([targets/common/ltvm-mirrors.sh](targets/common/ltvm-mirrors.sh)) as
   its first RUN (mounting the optional `ltvm_mirror_ca` secret), and
-  again after installing epel-release.  It rewrites dnf, apt (deb822 and
-  one-line) and zypper repo files, noting under
+  again after installing epel-release.  It rewrites dnf, apt (deb822
+  `.sources`), and zypper repo files, noting under
   `/var/lib/ltvm-mirrors/edits` each line it changed and in which
-  section, and puts the CA in the trust stores (0644 so `_apt` can read
-  it); apt also gets a per-host `CaInfo`, since Debian/Ubuntu base
-  images have no `ca-certificates`.  When an `https://` mirror is
-  configured without an explicit `ca`, `mirrors.py` passes the host's
-  system CA bundle (`LTVM_MIRROR_CA_HASH=host`, never hashing the host
-  bundle so routine host CA updates do not invalidate layers) for
-  Debian/Ubuntu builds so minimal apt images can verify
-  public HTTPS mirrors too (images that already ship `ca-certificates`
-  ignore it).  epel-10's pdsh goes through `ltvm-mirrors dnf-epel 10`.
+  section, and puts the configured CA in the trust stores (0644 so
+  `_apt` can read it); apt also gets a per-host `CaInfo`, since
+  Debian/Ubuntu base images ship without `ca-certificates` (use
+  `http://` mirrors or set `ca =` to a PEM bundle for `https://` apt
+  mirrors).  epel-10's pdsh goes through `ltvm-mirrors dnf-epel 10`.
   The script must run under bash 3.2: the tests drive it on macOS's.
 - **Build-time only.**  The image's generated inject stage ends with
   `RESTORE_MIRRORS_LINE` (`image_build.py`), so an exported VM has the
@@ -443,12 +439,7 @@ replaces in README.md).  Each key stands for fixed upstream prefixes in
   `target publish` refuse it, so internal hosts never ship.
 - **Repos Python adds** for cross sysroots go through
   `mirrors.rewrite_url()`: `cross_compile.leap_sysroot_repos` and
-  `CrossInfo.apt_sources_url`.  Those follow the settings of the moment
-  while the container keeps the repos and CA it was built with, so the
-  container also carries `ltvm.site-mirrors-id`, a digest of its mirror
-  settings, and cross, image-tools, ZFS, and MOFED-kmod builds warn when
-  it differs (`mirrors.container_drift`, including when mirrors were
-  later retired).
+  `CrossInfo.apt_sources_url`.
 - **Settings** are parsed once per state of the site file and the
   `LTVM_MIRROR_*` environment (`mirrors._settings`).  What is ignored --
   an unknown key, an unusable URL -- warns and is also an issue in
@@ -456,8 +447,7 @@ replaces in README.md).  Each key stands for fixed upstream prefixes in
 - Out of scope: non-repo downloads (SRPMs, GitHub, PyPI, ZFS tarballs),
   which use the proxy variables, and the guest's own dnf/apt at run time.
 
-Tests: tests/test_mirrors.py runs the script against each distro's stock
-repo files in `tests/fixtures/mirrors/`, copied out of the base images.
+Tests: tests/test_mirrors.py.
 
 ### Kernel build inputs (from Lustre tree)
 
