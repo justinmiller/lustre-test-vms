@@ -1,6 +1,13 @@
 ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:10.1
 FROM ${BASE_IMAGE}
 
+# The site's package mirrors and CA, from [mirrors] in /etc/ltvm.conf;
+# a no-op without them (common/ltvm-mirrors.sh).
+ARG LTVM_MIRRORS=
+ARG LTVM_MIRROR_CA_HASH=
+COPY common/ltvm-mirrors.sh /usr/local/sbin/ltvm-mirrors
+RUN --mount=type=secret,id=ltvm_mirror_ca,target=/run/secrets/ltvm_mirror_ca bash /usr/local/sbin/ltvm-mirrors apply
+
 # Build container for the `mainline` target: vanilla kernel.org
 # kernels on a Rocky 10 userspace.
 #
@@ -17,6 +24,9 @@ FROM ${BASE_IMAGE}
 # Enable CRB + EPEL repos
 RUN dnf -y install dnf-plugins-core epel-release \
     && dnf config-manager --set-enabled crb
+
+# epel-release added repos of its own.
+RUN bash /usr/local/sbin/ltvm-mirrors apply
 
 # Install build packages from the canonical shared list.
 # Match rocky8/rocky9 (no --skip-broken) so dependency resolution

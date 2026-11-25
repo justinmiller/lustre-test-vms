@@ -299,6 +299,55 @@ timeout = 7200
 
 Kernel and image builds have no limit.
 
+A site whose network is slow to the distros' own package hosts, or that
+keeps its own copies, can point the builds at mirrors, and give a CA to
+trust when an internal one signed a mirror's certificate:
+
+```ini
+# /etc/ltvm.conf
+[mirrors]
+debian = http://debian.osuosl.org/debian https://repomirror.example.com/debian
+rocky  = https://mirror.example.com/rocky
+epel   = https://mirror.example.com/epel
+ca     = /etc/pki/ca-trust/source/anchors/example-ca.pem
+```
+
+| key | replaces |
+|---|---|
+| `rocky` | `dl.rockylinux.org/pub/rocky` |
+| `epel` | `download.example/pub/epel` (EPEL's own mirror path) |
+| `debian` | `deb.debian.org/debian` |
+| `debian-security` | `deb.debian.org/debian-security`, `security.debian.org/debian-security` |
+| `ubuntu` | `archive.ubuntu.com/ubuntu` (x86_64) |
+| `ubuntu-security` | `security.ubuntu.com/ubuntu` (x86_64) |
+| `ubuntu-ports` | `ports.ubuntu.com/ubuntu-ports` (arm64: archive and security) |
+| `opensuse` | `download.opensuse.org` |
+
+A repo URL that begins with the left-hand prefix is rewritten to begin
+with the mirror, so a mirror is given as its equivalent of that prefix;
+a repo with no mirror set keeps its own host.  Several mirrors,
+space-separated, are tried in order by dnf and apt; zypper takes the
+first.  `LTVM_MIRROR_<KEY>` (`LTVM_MIRROR_DEBIAN_SECURITY`,
+`LTVM_MIRROR_CA`) wins over the file, for one user or one command; setting
+a key to the empty string clears it, and `LTVM_NO_MIRRORS=1` disables all
+mirrors and CA for a run (useful when rebuilding a clean container before
+`ltvm target publish`).
+`ltvm doctor` lists what is set, and counts as issues a key it does not
+know, a URL it cannot use and a CA it cannot read: the first two are
+otherwise only a warning, and the build quietly uses upstream.
+
+The mirrors are for building.  The build container keeps them, for the
+dnf and apt that the ZFS and cross builds run in it, but a VM image gets
+the distro's own repos back, and no CA, before it is exported.  Changing
+a mirror makes nothing stale (`ltvm build ... --force` rebuilds with the
+new one), and `ltvm target publish` refuses a build container made with
+mirrors, so a site's internal hosts never reach a release.  Minimal
+Debian/Ubuntu base images ship without `ca-certificates`, so use `http://`
+mirrors there (apt still verifies package signatures) or set `ca` to a
+PEM bundle.  Downloads that are not package repos -- the kernel SRPM,
+GitHub, PyPI, whamcloud -- still go to their own hosts, through the
+usual proxy variables.
+
 Lustre is configured `--with-o2ib=yes`, building ko2iblnd against the
 kernel's own InfiniBand stack, which every kernel gets from the shared
 config overlay.  A kernel whose target turns InfiniBand off on purpose

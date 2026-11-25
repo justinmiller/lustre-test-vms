@@ -1,6 +1,13 @@
 ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:8.10
 FROM ${BASE_IMAGE}
 
+# The site's package mirrors and CA, from [mirrors] in /etc/ltvm.conf;
+# a no-op without them (common/ltvm-mirrors.sh).
+ARG LTVM_MIRRORS=
+ARG LTVM_MIRROR_CA_HASH=
+COPY common/ltvm-mirrors.sh /usr/local/sbin/ltvm-mirrors
+RUN --mount=type=secret,id=ltvm_mirror_ca,target=/run/secrets/ltvm_mirror_ca bash /usr/local/sbin/ltvm-mirrors apply
+
 # Rocky 8 build container for kernel and Lustre builds.
 # GCC 8 matches the EL8 4.18.0 kernel build environment.
 
@@ -9,6 +16,9 @@ FROM ${BASE_IMAGE}
 # package-install below uses xargs, so pull it in up front.
 RUN dnf -y install dnf-plugins-core epel-release findutils \
     && dnf config-manager --set-enabled powertools
+
+# epel-release added repos of its own.
+RUN bash /usr/local/sbin/ltvm-mirrors apply
 
 # Install build packages from the canonical shared list.  Strict
 # install (no --skip-broken), matching rocky9/rocky10: a missing

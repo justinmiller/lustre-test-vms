@@ -1,6 +1,13 @@
 ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:10.1
 FROM ${BASE_IMAGE}
 
+# The site's package mirrors and CA, from [mirrors] in /etc/ltvm.conf;
+# a no-op without them (common/ltvm-mirrors.sh).
+ARG LTVM_MIRRORS=
+ARG LTVM_MIRROR_CA_HASH=
+COPY common/ltvm-mirrors.sh /usr/local/sbin/ltvm-mirrors
+RUN --mount=type=secret,id=ltvm_mirror_ca,target=/run/secrets/ltvm_mirror_ca bash /usr/local/sbin/ltvm-mirrors apply
+
 # VM base image for the `mainline` target -- Rocky 10 userspace,
 # booted with a vanilla kernel.org kernel.
 # Userspace matches targets/rocky10 so that a Lustre failure here is
@@ -12,6 +19,9 @@ FROM ${BASE_IMAGE}
 RUN dnf -y install epel-release dnf-plugins-core \
     && dnf config-manager --set-enabled crb \
     && dnf clean all
+
+# epel-release added repos of its own.
+RUN bash /usr/local/sbin/ltvm-mirrors apply
 
 # Copy package lists and install
 COPY common/packages-base.txt /tmp/packages-base.txt
@@ -47,8 +57,7 @@ RUN ARCH=$(uname -m); SKIP_ARCH=/tmp/packages-skip-$ARCH.txt; \
 # pdsh is only in the epel-10 branch, not the epel-z-10.N branch a 10.1
 # base pins (see rocky10/packages-skip.txt).  Without it a node cannot
 # drive a multi-node test run, so take it from epel-10 directly.
-RUN dnf -y install \
-        --setopt=epel.metalink='https://mirrors.fedoraproject.org/metalink?repo=epel-10&arch=$basearch' \
+RUN bash /usr/local/sbin/ltvm-mirrors dnf-epel 10 -y install \
         pdsh pdsh-rcmd-ssh \
     && dnf clean all
 
