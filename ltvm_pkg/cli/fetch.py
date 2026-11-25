@@ -2328,10 +2328,20 @@ def cmd_publish(args: argparse.Namespace) -> int:
                     snap_dir = snap_dir / variant
                 if not (snap_dir / ".ltvm-snapshot.json").exists():
                     return _error(_snapshot_missing(snap_dir), use_json)
-        from ltvm_pkg.release_package import check_build_container
+        from ltvm_pkg.release_package import (
+            check_build_container,
+            refuse_site_mirrors,
+        )
+        from ltvm_pkg.target_config import build_container_tag
 
         try:
-            check_build_container(tc.name, tc.output_dir, tc.arch, variant)
+            want = check_build_container(
+                tc.name, tc.output_dir, tc.arch, variant
+            )
+            refuse_site_mirrors(
+                want,
+                display_name=build_container_tag(tc.name, tc.arch, variant),
+            )
         except RuntimeError as e:
             return _error(f"Package failed: {e}", use_json)
         if not use_json:

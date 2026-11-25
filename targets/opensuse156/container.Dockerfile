@@ -1,6 +1,13 @@
 ARG BASE_IMAGE=registry.opensuse.org/opensuse/leap:15.6
 FROM ${BASE_IMAGE}
 
+# The site's package mirrors and CA, from [mirrors] in /etc/ltvm.conf;
+# a no-op without them (common/ltvm-mirrors.sh).
+ARG LTVM_MIRRORS=
+ARG LTVM_MIRROR_CA_HASH=
+COPY common/ltvm-mirrors.sh /usr/local/sbin/ltvm-mirrors
+RUN --mount=type=secret,id=ltvm_mirror_ca,target=/run/secrets/ltvm_mirror_ca bash /usr/local/sbin/ltvm-mirrors apply
+
 # openSUSE Leap 15.6 build container for SLES 15 kernel and Lustre
 # client builds.  GCC 7 is what SUSE builds the SLE 15 kernels with
 # (rpm/config.sh in SUSE/kernel-source names no other).

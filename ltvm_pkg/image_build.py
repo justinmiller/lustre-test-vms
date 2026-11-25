@@ -21,12 +21,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import priv
+from . import mirrors, priv
+from .cross_compile import leap_sysroot_repos, shell_quote_ver_url
 from .image_store import current_image, install_image, prune_superseded
 from .paths import load_meta_safe
 from .podman_gc import Superseded, final_image_tag, remove_tag
 from .podman_run import run_podman_with_cleanup
 from .target_config import TARGETS_DIR
+
+# The inject stage's last line.  An image's base layers from before
+# ltvm-mirrors.sh existed lack it, hence the test.
+RESTORE_MIRRORS_LINE = (
+    "RUN if [ -f /usr/local/sbin/ltvm-mirrors ]; then "
+    "bash /usr/local/sbin/ltvm-mirrors restore "
+    "&& rm -f /usr/local/sbin/ltvm-mirrors; fi"
+)
 
 if TYPE_CHECKING:
     from .target_config import TargetConfig
@@ -214,8 +223,17 @@ def _prebuild_tools_native(
                 "--build-arg",
                 f"KERNEL_DEB_SOURCE={target_config.kernel_deb_source}",
             ]
-        cmd += ["-f", str(build_dockerfile), str(TARGETS_DIR)]
-        subprocess.run(cmd, check=True)
+        with mirrors.podman_build_context(TARGETS_DIR) as (
+            build_cwd,
+            build_ctx,
+        ):
+            cmd += mirrors.build_args() + mirrors.label_args()
+            cmd += [
+                "-f",
+                str(build_dockerfile.resolve()),
+                str(build_ctx),
+            ]
+            subprocess.run(cmd, check=True, cwd=build_cwd)
 
     log.info(
         "Pre-building tools natively for %s (cross-compile in %s)...",
@@ -241,6 +259,7 @@ def _prebuild_tools_native(
     # succeeded and the image shipped silently missing test tools, with
     # the build reported green.  lustre_build's container script has
     # had `set -e` all along.
+    leap_oss, leap_sle = leap_sysroot_repos(arch)
     script = (
         "set -e\n"
         "set -o pipefail\n"
@@ -266,11 +285,8 @@ def _prebuild_tools_native(
         'VER=$(. /etc/os-release && echo "$VERSION_ID") && '
         f'Z="env ZYPP_CONF=/tmp/zypp-{arch}.conf zypper --root $SYSROOT -n '
         f'--gpg-auto-import-keys" && '
-        "$Z addrepo -f http://download.opensuse.org/"
-        + ("" if arch == "x86_64" else f"ports/{arch}/")
-        + "distribution/leap/$VER/repo/oss/ oss >/dev/null && "
-        "$Z addrepo -f http://download.opensuse.org/update/leap/$VER/sle/ "
-        "sle-update >/dev/null && "
+        f"$Z addrepo -f {shell_quote_ver_url(leap_oss)} oss >/dev/null && "
+        f"$Z addrepo -f {shell_quote_ver_url(leap_sle)} sle-update >/dev/null && "
         "$Z install --no-recommends glibc-devel linux-glibc-devel "
         "libuuid-devel gcc7 2>&1 | tail -3 && "
         f"G=/usr/lib64/gcc/{arch}-suse-linux/7 && "
@@ -834,21 +850,27 @@ def _build_base_layers(
 
     log.info("Building container image %s ...", tag)
     superseded.note(tag)
-    _run(
-        [
-            "podman",
-            "build",
-            *platform_args,
-            "--build-arg",
-            f"BASE_IMAGE={target_config.container_image}",
-            "-t",
-            tag,
-            "-f",
-            str(effective_dockerfile),
-            str(build_context),
-        ],
-        capture_output=False,
-    )
+    with mirrors.podman_build_context(build_context) as (
+        build_cwd,
+        build_ctx,
+    ):
+        _run(
+            [
+                "podman",
+                "build",
+                *platform_args,
+                "--build-arg",
+                f"BASE_IMAGE={target_config.container_image}",
+                *mirrors.build_args(),
+                "-t",
+                tag,
+                "-f",
+                str(effective_dockerfile.resolve()),
+                str(build_ctx),
+            ],
+            capture_output=False,
+            cwd=build_cwd,
+        )
 
     # ── Step 1a: Apply variant image overlay (e.g. MOFED) ──
     # Sits between the base image build and the kernel-module inject
@@ -1208,6 +1230,9 @@ def build_image(
             lines.extend(kdump_lines)
             lines.extend(stamp_lines)
             lines.extend(lustre_lines)
+            # Last: the VM gets the distro's own repos, not the site
+            # mirrors the build used (ltvm_pkg/mirrors.py).
+            lines.append(RESTORE_MIRRORS_LINE)
 
             inject_dockerfile = inject_dir / "Dockerfile"
             inject_dockerfile.write_text("\n".join(lines) + "\n")

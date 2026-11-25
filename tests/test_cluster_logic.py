@@ -987,10 +987,13 @@ class TestEnsurePdsh:
         assert got[1] == 1
 
     def test_dockerfiles_install_it(self) -> None:
+        # From epel-10, through the site's epel mirror when it has one.
         for target in ("rocky10", "mainline", "rocky10-16k"):
             text = Path(f"targets/{target}/image.Dockerfile").read_text()
-            assert "repo=epel-10&arch=$basearch" in text, target
+            assert "ltvm-mirrors dnf-epel 10 -y install" in text, target
             assert "pdsh pdsh-rcmd-ssh" in text, target
+        script = Path("targets/common/ltvm-mirrors.sh").read_text()
+        assert "repo=epel-$major&arch=\\$basearch" in script
 
 
 class TestMixedFamilies:

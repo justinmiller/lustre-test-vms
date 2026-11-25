@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import textwrap
 from collections.abc import Callable
@@ -164,6 +165,10 @@ def _isolate_user_state(
     monkeypatch.setenv("LTVM_VHOST_NET", "off")
     # The developer's own build time limit would change podman argv.
     monkeypatch.delenv("LTVM_BUILD_TIMEOUT", raising=False)
+    # As would their package mirrors (ltvm_pkg/mirrors.py).
+    for name in [n for n in os.environ if n.startswith("LTVM_MIRROR_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.delenv("LTVM_NO_MIRRORS", raising=False)
     # On a Mac, build_lustre, clean and doctor would otherwise create,
     # probe and list real podman volumes from tests that mock only the
     # build's own podman run.  Telling build_volumes it is not on a Mac
