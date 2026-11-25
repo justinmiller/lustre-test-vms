@@ -1,12 +1,22 @@
 ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:9
 FROM ${BASE_IMAGE}
 
+# The site's package mirrors and CA, from [mirrors] in /etc/ltvm.conf;
+# a no-op without them (common/ltvm-mirrors.sh).
+ARG LTVM_MIRRORS=
+ARG LTVM_MIRROR_CA_HASH=
+COPY common/ltvm-mirrors.sh /usr/local/sbin/ltvm-mirrors
+RUN --mount=type=secret,id=ltvm_mirror_ca,target=/run/secrets/ltvm_mirror_ca bash /usr/local/sbin/ltvm-mirrors apply
+
 # Rocky 9 build container for kernel and Lustre builds.
 # GCC 11 matches the EL9 5.14.0 kernel build environment.
 
 # Enable CRB + EPEL repos
 RUN dnf -y install dnf-plugins-core epel-release \
     && dnf config-manager --set-enabled crb
+
+# epel-release added repos of its own.
+RUN bash /usr/local/sbin/ltvm-mirrors apply
 
 # Install build packages from the canonical shared list.  Adding a
 # package once in common/packages-dev.txt picks it up across every

@@ -373,6 +373,68 @@ relative to the kernel dir, so they hold on a group-writable tree.
 Tests: tests/test_storage.py (`_same_fs` patched to False exercises the
 copy path on one filesystem).
 
+### Package mirrors
+
+`[mirrors]` in `/etc/ltvm.conf` (and `LTVM_MIRROR_<KEY>` over it; empty
+clears one key, and `LTVM_NO_MIRRORS=1` disables all mirrors and CA) names
+mirrors for the distro repos the builds install from, and a CA to trust
+for them ([ltvm_pkg/mirrors.py](ltvm_pkg/mirrors.py); keys and what each
+replaces in README.md).  Each key stands for fixed upstream prefixes in
+`UPSTREAMS`, matched on whole path components over http and https --
+`deb.debian.org/debian` must not take `.../debian-security`.
+
+- **Hash.**  The values reach the build only as `--build-arg
+  LTVM_MIRRORS` / `LTVM_MIRROR_CA_HASH` and `--secret id=ltvm_mirror_ca`
+  (`mirrors.build_args()`), never through `input_hash`: another mirror
+  serves the same packages, so changing it must not make every artifact
+  stale.  Both args are always passed, empty without mirrors; passing
+  the CA PEM as a build secret keeps large CA bundles out of image
+  history and under Linux's `MAX_ARG_STRLEN`.
+- **In the build.**  Every container.Dockerfile and image.Dockerfile
+  declares the two ARGs and runs `ltvm-mirrors apply`
+  ([targets/common/ltvm-mirrors.sh](targets/common/ltvm-mirrors.sh)) as
+  its first RUN (mounting the optional `ltvm_mirror_ca` secret), and
+  again after installing epel-release.  It rewrites dnf, apt (deb822 and
+  one-line) and zypper repo files, noting under
+  `/var/lib/ltvm-mirrors/edits` each line it changed and in which
+  section, and puts the CA in the trust stores (0644 so `_apt` can read
+  it); apt also gets a per-host `CaInfo`, since Debian/Ubuntu base
+  images have no `ca-certificates`.  When an `https://` mirror is
+  configured without an explicit `ca`, `mirrors.py` passes the host's
+  system CA bundle (`LTVM_MIRROR_CA_HASH=host`, never hashing the host
+  bundle so routine host CA updates do not invalidate layers) for
+  Debian/Ubuntu builds so minimal apt images can verify
+  public HTTPS mirrors too (images that already ship `ca-certificates`
+  ignore it).  epel-10's pdsh goes through `ltvm-mirrors dnf-epel 10`.
+  The script must run under bash 3.2: the tests drive it on macOS's.
+- **Build-time only.**  The image's generated inject stage ends with
+  `RESTORE_MIRRORS_LINE` (`image_build.py`), so an exported VM has the
+  stock repos and no CA.  `restore` undoes only the noted lines, on the
+  file as it is then: putting back a copy saved at `apply` undid what
+  the Dockerfile did in between, and every rocky image shipped with
+  crb (powertools) disabled again.  The build container keeps them -- the ZFS and
+  cross builds run dnf and apt in it -- and is labelled
+  `ltvm.site-mirrors=<keys>` (`mirrors.label_args()`, inherited by
+  variant containers); `release_package.refuse_site_mirrors` makes
+  `target publish` refuse it, so internal hosts never ship.
+- **Repos Python adds** for cross sysroots go through
+  `mirrors.rewrite_url()`: `cross_compile.leap_sysroot_repos` and
+  `CrossInfo.apt_sources_url`.  Those follow the settings of the moment
+  while the container keeps the repos and CA it was built with, so the
+  container also carries `ltvm.site-mirrors-id`, a digest of its mirror
+  settings, and cross, image-tools, ZFS, and MOFED-kmod builds warn when
+  it differs (`mirrors.container_drift`, including when mirrors were
+  later retired).
+- **Settings** are parsed once per state of the site file and the
+  `LTVM_MIRROR_*` environment (`mirrors._settings`).  What is ignored --
+  an unknown key, an unusable URL -- warns and is also an issue in
+  `ltvm doctor`, as an unreadable CA is.
+- Out of scope: non-repo downloads (SRPMs, GitHub, PyPI, ZFS tarballs),
+  which use the proxy variables, and the guest's own dnf/apt at run time.
+
+Tests: tests/test_mirrors.py runs the script against each distro's stock
+repo files in `tests/fixtures/mirrors/`, copied out of the base images.
+
 ### Kernel build inputs (from Lustre tree)
 
 `ltvm build kernel` parses the Lustre tree for the

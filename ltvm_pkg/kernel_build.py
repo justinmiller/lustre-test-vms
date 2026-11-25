@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
-from . import kernel_store
+from . import kernel_store, mirrors
 from .cross_compile import host_podman_platform
 from .lustre_tree import kp_configs, kp_patches, kp_series, kp_targets
 from .paths import load_meta_safe
@@ -866,7 +866,14 @@ def _ensure_container_image(
     checkout of a user, so inspecting it afterwards can name another's.
     Each build writes it, so the last one, the image returned, wins.
     """
-    iid_args = ["--iidfile", str(iidfile)] if iidfile is not None else []
+    iid_args = (
+        [
+            "--iidfile",
+            str(iidfile if iidfile.is_absolute() else iidfile.resolve()),
+        ]
+        if iidfile is not None
+        else []
+    )
     from .target_config import DEFAULT_VARIANT, build_container_tag
 
     arch = target_config.arch
@@ -902,14 +909,20 @@ def _ensure_container_image(
             "--build-arg",
             f"KERNEL_DEB_SOURCE={target_config.kernel_deb_source}",
         ]
-    cmd += [
-        "-f",
-        str(base_dockerfile),
-        str(TARGETS_DIR),
-    ]
     superseded = Superseded()
     superseded.note(base_tag)
-    subprocess.run(cmd, check=True)
+    with mirrors.podman_build_cwd() as build_cwd:
+        # A variant container is built FROM this one and inherits both.
+        cmd += (
+            mirrors.build_args(build_cwd, os_family=target_config.os_family)
+            + mirrors.label_args()
+        )
+        cmd += [
+            "-f",
+            str(base_dockerfile.resolve()),
+            str(TARGETS_DIR.resolve()),
+        ]
+        subprocess.run(cmd, check=True, cwd=build_cwd)
 
     if variant == DEFAULT_VARIANT:
         superseded.drop()
