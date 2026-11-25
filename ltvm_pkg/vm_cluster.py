@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import numa_dist, shmrdma_req, vm_claim
+from .guest_hosts import ensure_localhost_sh
 from .nic_spec import numa_problem as nic_numa_problem
 from .qemu_run import (
     die,
@@ -1625,9 +1626,14 @@ GUEST_HOSTS_BEGIN = "# --- ltvm cluster"
 GUEST_HOSTS_END = "# --- END ltvm cluster"
 
 # Replace the block, or append it.  sed rather than a rewrite through a
-# new file, so /etc/hosts keeps its inode and mode; a file with no
-# trailing newline gets one, or the first entry would join its last line.
+# new file, so /etc/hosts keeps its inode; chmod 644 ensures
+# world-readability if ensure_localhost_sh created the file under a
+# restrictive umask.  A file with no trailing newline gets one, or the
+# first entry would join its last line.  The localhost entries go in
+# first: an image from before the export added them has no /etc/hosts at
+# all on Debian, and sed -i fails on that.
 _GUEST_HOSTS_SCRIPT = (
+    f"{ensure_localhost_sh('/etc/hosts')} && chmod 644 /etc/hosts && "
     f"sed -i '/^{GUEST_HOSTS_BEGIN}/,/^{GUEST_HOSTS_END}/d' /etc/hosts && "
     '{ [ -z "$(tail -c 1 /etc/hosts)" ] || echo; cat; } >> /etc/hosts'
 )

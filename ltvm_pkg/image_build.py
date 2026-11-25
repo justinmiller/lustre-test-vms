@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import priv
+from .guest_hosts import ensure_localhost_sh
 from .image_store import current_image, install_image, prune_superseded
 from .paths import load_meta_safe
 from .podman_gc import Superseded, final_image_tag, remove_tag
@@ -1440,6 +1441,22 @@ def _kmod_images(
     return names
 
 
+def _rootfs_hosts_sh(rootfs: str) -> str:
+    """Shell giving the extracted *rootfs* the localhost entries.
+
+    *rootfs* is a shell word (quoted path, or ``$ROOTFS``).  A symlink
+    there is replaced first: on a Linux host the script runs on the host
+    itself, where an absolute link would point at the host's own file.
+    Sets mode 0644 explicitly so strict (0077) or group-shared (0002)
+    host umasks cannot leave /etc/hosts unreadable or group-writable.
+    """
+    hosts = f"{rootfs}/etc/hosts"
+    return (
+        f"{{ [ ! -L {hosts} ] || rm -f {hosts}; }}; "
+        f"{ensure_localhost_sh(hosts)}; chmod 644 {hosts}"
+    )
+
+
 def _export_to_ext4(
     container_tag: str,
     out_dir: Path,
@@ -1507,6 +1524,9 @@ def _export_to_ext4(
         #
         # The macOS and Linux branches below each build their own
         # variant of that script; the notes above apply to both.
+        # Both also give the rootfs the localhost entries of
+        # /etc/hosts (_rootfs_hosts_sh), which Debian and Ubuntu images
+        # otherwise lack.
         # -O ^metadata_csum,^dir_index in each works around two
         # distinct e2fsprogs 1.46.5 bugs in `mke2fs -d`; both are
         # re-enabled via tune2fs + e2fsck -D after the populate, so the
@@ -1544,6 +1564,7 @@ def _export_to_ext4(
                 "mkdir -p $ROOTFS/dev/pts $ROOTFS/dev/shm "
                 "$ROOTFS/dev/mqueue; "
                 "chmod -R u+rX $ROOTFS; "
+                f"{_rootfs_hosts_sh('$ROOTFS')}; "
                 "mke2fs -t ext4 -b 4096 -L rootfs -E root_owner=0:0 "
                 "-O ^metadata_csum,^dir_index "
                 f"-d $ROOTFS /tmp/out.ext4 {size_mb}M >&2; "
@@ -1577,6 +1598,7 @@ def _export_to_ext4(
                 f"{shlex.quote(str(rootfs))}/dev/shm "
                 f"{shlex.quote(str(rootfs))}/dev/mqueue; "
                 f"chmod -R u+rX {shlex.quote(str(rootfs))}; "
+                f"{_rootfs_hosts_sh(shlex.quote(str(rootfs)))}; "
                 f"{shlex.quote(_e2fs('mke2fs'))} -t ext4 -b 4096 "
                 f"-L rootfs -E root_owner=0:0 "
                 f"-O ^metadata_csum,^dir_index "
