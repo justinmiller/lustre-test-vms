@@ -885,6 +885,9 @@ def _ensure_container_image(
     # cross-compile-env.sh sees CROSSING=0.
     platform = host_podman_platform()
 
+    from .host_setup import hold_podman_usage
+
+    hold_podman_usage()
     log.info("Building container image: %s", base_tag)
     cmd = [
         "podman",

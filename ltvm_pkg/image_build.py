@@ -46,6 +46,10 @@ _IMAGE_SIZE_HEADROOM_MB = 128
 
 def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run a command, logging it and raising on failure."""
+    if cmd and str(cmd[0]) == "podman":
+        from .host_setup import hold_podman_usage
+
+        hold_podman_usage()
     log.info("Running: %s", " ".join(str(c) for c in cmd))
     return subprocess.run(
         cmd,
@@ -191,6 +195,9 @@ def _prebuild_tools_native(
     output_dir.mkdir(parents=True)
 
     # Ensure the native build container exists (build it if missing).
+    from .host_setup import hold_podman_usage
+
+    hold_podman_usage()
     r = subprocess.run(
         ["podman", "image", "exists", build_tag], capture_output=True
     )

@@ -323,6 +323,25 @@ Every build warns when the artifacts or podman filesystem has
 under 30 GiB free (`cli.build._warn_low_disk`), since a build
 that runs out fails late with nothing naming the cause.
 
+Podman/buildah persistent build-cache mounts (`--mount=type=cache,
+id=ltvm-*`, such as `ltvm-apt-*`, `ltvm-build-tools`, `ltvm-rdma-core`,
+`ltvm-dnf-*`) live under `<ImageCopyTmpDir>/buildah-cache-<uid>/`,
+outside `podman system df`.  `ltvm_pkg/build_caches.py` maps buildah's
+`sha256("<id>:0:0")[:16]` directories back to known `ltvm-*` IDs (using
+`podman unshare` on rootless hosts and `podman machine ssh` when the
+macOS podman machine is running -- never starting a stopped machine).
+`ltvm doctor` reports their footprint and warns above 5 GiB; `ltvm
+clean` lists them as kept and `ltvm clean --build-cache [--apply]`
+prunes them.  Each cache's sharing mode comes from how the Dockerfiles
+(and `_SHARED_CACHES`) declare it rather than from leftover buildah
+lockfiles on disk: `sharing=locked` caches acquire buildah's per-cache
+`fcntl` lockfile (falling back to `host_setup.podman_exclusive_lock` if
+no lockfile exists), while `sharing=shared` caches (`ltvm-build-tools`,
+`ltvm-rdma-core`) ignore any leftover lockfile and acquire
+`host_setup.podman_exclusive_lock` (non-blocking `LOCK_EX` on
+`ltvm-podman-<uid>.lock`, held by every `ltvm` podman process on both
+Linux and macOS) across `rm -rf`.
+
 ### Hot and cold storage
 
 `target_config.ARTIFACTS_DIR` is `LTVM_ARTIFACTS_DIR`, else `[storage]

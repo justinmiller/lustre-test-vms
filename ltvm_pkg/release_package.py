@@ -117,8 +117,12 @@ def _ensure_podman() -> None:
     `target fetch` after an idle stop failing `podman load` with "Cannot
     connect to Podman".
     """
-    from ltvm_pkg.host_setup import check_podman_machine_macos
+    from ltvm_pkg.host_setup import (
+        check_podman_machine_macos,
+        hold_podman_usage,
+    )
 
+    hold_podman_usage()
     check_podman_machine_macos()
 
 

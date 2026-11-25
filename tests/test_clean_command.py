@@ -81,6 +81,7 @@ def _run_prune(
     force: bool = False,
     use_json: bool = False,
     user_zfs: bool = False,
+    build_cache: bool = False,
 ) -> int:
     from ltvm_pkg.cli import cmd_prune
 
@@ -93,6 +94,7 @@ def _run_prune(
         force=force,
         json=use_json,
         user_zfs=user_zfs,
+        build_cache=build_cache,
     )
     with (
         _patch_paths(tmp_targets)[0],
@@ -743,3 +745,187 @@ class TestBuildVolumes:
         assert rc == EXIT_OK
         out = capsys.readouterr().out
         assert "volume" not in out.lower()
+
+
+class TestPodmanBuildCaches:
+    def _sample(self) -> list:
+        from ltvm_pkg.build_caches import CacheEntry
+
+        now = datetime.now(tz=timezone.utc).timestamp()
+        return [
+            CacheEntry(
+                cache_id="ltvm-apt-debian13",
+                dir_name="753ad0166846d169",
+                bytes=600 * 1024**2,
+                mtime=now - 45 * 86400,
+                target="debian13",
+                description="apt package cache (debian13)",
+            ),
+            CacheEntry(
+                cache_id="ltvm-build-tools",
+                dir_name="f790817c28451139",
+                bytes=50 * 1024**2,
+                mtime=now - 5 * 86400,
+                target=None,
+                description="shared tool download cache",
+            ),
+            CacheEntry(
+                cache_id="ltvm-dnf-rocky9",
+                dir_name="1111222233334444",
+                bytes=300 * 1024**2,
+                mtime=now - 2 * 86400,
+                target="rocky9",
+                description="dnf package cache (rocky9)",
+            ),
+        ]
+
+    def test_default_clean_lists_caches_as_kept_and_never_prunes(
+        self, tmp_targets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch(
+                "ltvm_pkg.build_caches.list_caches",
+                return_value=self._sample(),
+            ),
+            patch("ltvm_pkg.build_caches.remove_caches") as rm,
+        ):
+            rc = _run_prune(tmp_targets, apply=True)
+        assert rc == EXIT_OK
+        out = capsys.readouterr().out
+        assert "Podman build caches (kept; pass --build-cache to prune):" in out
+        assert "ltvm-apt-debian13" in out
+        assert "ltvm-build-tools" in out
+        assert "Nothing to prune." in out
+        rm.assert_not_called()
+
+    def test_build_cache_dry_run_and_apply(
+        self, tmp_targets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        sample = self._sample()
+        with (
+            patch("ltvm_pkg.build_caches.list_caches", return_value=sample),
+            patch("ltvm_pkg.build_caches.remove_caches") as rm,
+        ):
+            rc = _run_prune(tmp_targets, build_cache=True)
+        assert rc == EXIT_OK
+        out = capsys.readouterr().out
+        assert "Podman build caches to remove:" in out
+        assert "Would free" in out and "--apply" in out
+        rm.assert_not_called()
+
+        with (
+            patch("ltvm_pkg.build_caches.list_caches", return_value=sample),
+            patch(
+                "ltvm_pkg.build_caches.remove_caches",
+                return_value={e.dir_name: (True, None) for e in sample},
+            ) as rm,
+        ):
+            rc = _run_prune(
+                tmp_targets, build_cache=True, apply=True, use_json=True
+            )
+        assert rc == EXIT_OK
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["removed_build_caches"] == [
+            "ltvm-apt-debian13",
+            "ltvm-build-tools",
+            "ltvm-dnf-rocky9",
+        ]
+        assert payload["podman_build_caches_checked"] is True
+        rm.assert_called_once()
+
+    def test_target_scoped_build_cache_keeps_shared_and_other_targets(
+        self, tmp_targets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        sample = self._sample()
+        with (
+            patch("ltvm_pkg.build_caches.list_caches", return_value=sample),
+            patch(
+                "ltvm_pkg.build_caches.remove_caches",
+                return_value={"753ad0166846d169": (True, None)},
+            ) as rm,
+        ):
+            rc = _run_prune(
+                tmp_targets,
+                target="debian13",
+                build_cache=True,
+                apply=True,
+                use_json=True,
+            )
+        assert rc == EXIT_OK
+        payload = json.loads(capsys.readouterr().out)
+        assert [c["id"] for c in payload["podman_build_caches"]] == [
+            "ltvm-apt-debian13"
+        ]
+        assert [c["id"] for c in payload["podman_build_caches_kept"]] == [
+            "ltvm-build-tools"
+        ]
+        assert payload["removed_build_caches"] == ["ltvm-apt-debian13"]
+        rm.assert_called_once()
+
+    def test_older_than_filters_build_caches(
+        self, tmp_targets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with patch(
+            "ltvm_pkg.build_caches.list_caches", return_value=self._sample()
+        ):
+            rc = _run_prune(
+                tmp_targets, build_cache=True, older_than="30", use_json=True
+            )
+        assert rc == EXIT_OK
+        payload = json.loads(capsys.readouterr().out)
+        assert [c["id"] for c in payload["podman_build_caches"]] == [
+            "ltvm-apt-debian13"
+        ]
+        assert {c["id"] for c in payload["podman_build_caches_kept"]} == {
+            "ltvm-build-tools",
+            "ltvm-dnf-rocky9",
+        }
+
+    def test_busy_cache_is_reported_as_error(
+        self, tmp_targets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        sample = self._sample()[:1]
+        with (
+            patch("ltvm_pkg.build_caches.list_caches", return_value=sample),
+            patch(
+                "ltvm_pkg.build_caches.remove_caches",
+                return_value={
+                    sample[0].dir_name: (False, "in use by a running build")
+                },
+            ),
+        ):
+            rc = _run_prune(tmp_targets, build_cache=True, apply=True)
+        assert rc != EXIT_OK
+        out = capsys.readouterr().out
+        assert "in use by a running build" in out
+
+    def test_unchecked_build_cache_errors_on_apply(
+        self, tmp_targets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with (
+            patch("ltvm_pkg.build_caches.list_caches", return_value=None),
+            patch("ltvm_pkg.build_caches.is_macos", return_value=False),
+        ):
+            rc_dry = _run_prune(tmp_targets, build_cache=True)
+            assert rc_dry == EXIT_OK
+            out_linux = capsys.readouterr().out
+            assert "not checked" in out_linux
+            assert "podman machine" not in out_linux
+
+            rc_apply = _run_prune(tmp_targets, build_cache=True, apply=True)
+            assert rc_apply != EXIT_OK
+            assert "podman machine" not in capsys.readouterr().out
+
+        with (
+            patch("ltvm_pkg.build_caches.list_caches", return_value=None),
+            patch("ltvm_pkg.build_caches.is_macos", return_value=True),
+        ):
+            rc_apply = _run_prune(tmp_targets, build_cache=True, apply=True)
+            assert rc_apply != EXIT_OK
+            assert "podman machine" in capsys.readouterr().out
+
+    def test_rejects_user_zfs_with_build_cache(
+        self, tmp_targets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc = _run_prune(tmp_targets, user_zfs=True, build_cache=True)
+        assert rc != EXIT_OK

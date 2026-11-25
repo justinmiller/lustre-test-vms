@@ -4510,13 +4510,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(disk_info)
 
     # macOS: what the build volumes inside the podman machine hold.
-    from . import build_volumes
+    from . import build_caches, build_volumes
 
     vol_warnings, vol_info = build_volumes.doctor_report()
     for w in vol_warnings:
         print(w)
         issues += 1
     for line in vol_info:
+        print(line)
+
+    # Podman/buildah persistent build-cache mounts (Linux + macOS).
+    cache_warnings, cache_info = build_caches.doctor_report()
+    for w in cache_warnings:
+        print(w)
+        issues += 1
+    for line in cache_info:
         print(line)
 
     # Hot and cold artifact storage ([storage] in /etc/ltvm.conf).

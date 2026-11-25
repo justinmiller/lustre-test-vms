@@ -138,6 +138,11 @@ def run_podman_with_cleanup(
     :func:`tempfile.mkstemp` then immediately unlink the empty
     file before passing the path to podman.
     """
+    if cmd and cmd[0] == "podman":
+        from .host_setup import hold_podman_usage
+
+        hold_podman_usage()
+
     is_podman_run = len(cmd) >= 2 and cmd[0] == "podman" and cmd[1] == "run"
 
     cidfile_path: Path | None = None
