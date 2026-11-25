@@ -1201,10 +1201,16 @@ def _build_in_container(
     # aarch64 host can cross-build x86_64 Lustre and vice versa.
     import platform
 
-    from .cross_compile import cross_info, host_deb_arch
+    from .cross_compile import (
+        cross_info,
+        host_deb_arch,
+        leap_sysroot_repos,
+        shell_quote_ver_url,
+    )
 
     host_machine = platform.machine()
     xinfo = cross_info(arch, host_machine)
+    leap_oss, leap_sle = leap_sysroot_repos(xinfo.target_arch)
     cross_compiling = xinfo.crossing
 
     # Build the shell script to run inside the container
@@ -1313,15 +1319,8 @@ def _build_in_container(
             f'VER=$(. /etc/os-release && echo "$VERSION_ID") && '
             f'Z="zypper --root {sysroot} -n --gpg-auto-import-keys" && '
             f"export ZYPP_CONF=/tmp/zypp-{xinfo.target_arch}.conf && "
-            f"$Z addrepo -f http://download.opensuse.org/"
-            + (
-                ""
-                if xinfo.target_arch == "x86_64"
-                else f"ports/{xinfo.target_arch}/"
-            )
-            + f"distribution/leap/$VER/repo/oss/ oss >/dev/null && "
-            f"$Z addrepo -f http://download.opensuse.org/update/leap/$VER/sle/ "
-            f"sle-update >/dev/null && "
+            f"$Z addrepo -f {shell_quote_ver_url(leap_oss)} oss >/dev/null && "
+            f"$Z addrepo -f {shell_quote_ver_url(leap_sle)} sle-update >/dev/null && "
             f"$Z install --no-recommends "
             f"glibc-devel linux-glibc-devel libmount-devel libyaml-devel "
             f"libnl3-devel libaio-devel libselinux-devel zlib-devel "
@@ -1347,7 +1346,8 @@ def _build_in_container(
             + r"' {} && "
             f'printf "Types: deb\\nURIs: %s\\nSuites: %s %s-updates %s-security'
             f'\\nComponents: main universe\\nArchitectures: %s\\n" '
-            f'{xinfo.apt_sources_url} "$CODENAME" "$CODENAME" "$CODENAME" '
+            f"{shlex.quote(xinfo.apt_sources_url)} "
+            f'"$CODENAME" "$CODENAME" "$CODENAME" '
             f"{xinfo.deb_arch} "
             f"> /etc/apt/sources.list.d/{xinfo.deb_arch}-sources.sources; "
             f"fi && "
