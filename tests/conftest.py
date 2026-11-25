@@ -545,6 +545,24 @@ def _neutralize_ensure_pdsh() -> object:
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_time_sync(monkeypatch: pytest.MonkeyPatch) -> object:
+    """Keep tests off the real host SNTP responder and guest SSH clock sync.
+
+    tests/test_time_sync.py exercises both directly.
+    """
+    monkeypatch.delenv("LTVM_TIME_SERVER", raising=False)
+    monkeypatch.delenv("LTVM_TIME_PORT", raising=False)
+    with (
+        patch("ltvm_pkg.time_sync.ensure_time_server", new=_returns(False)),
+        patch("ltvm_pkg.time_sync.sync_guest_clock", new=_returns(True)),
+        patch("ltvm_pkg.time_sync.stop_time_server", new=_returns(False)),
+        patch("ltvm_pkg.time_sync.stop_all_time_servers", new=_returns([])),
+        patch("ltvm_pkg.time_sync.probe_time_server", new=_returns(False)),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_guest_helpers() -> object:
     """Keep cluster deploy from writing the guest helpers over ssh."""
     with patch(
