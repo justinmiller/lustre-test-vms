@@ -795,10 +795,7 @@ def _unregister_ssh_name_locked(name: str) -> None:
 # Keys arrive on stdin (one per line); each non-blank line is appended
 # only when not already present, and a file with no trailing newline gets
 # one first so the key does not join its last line.
-_ADD_AUTHORIZED_KEY_SCRIPT = (
-    "umask 077 && "
-    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-    "touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && "
+_ADD_AUTHORIZED_KEY_LOOP = (
     'while IFS= read -r key || [ -n "$key" ]; do '
     'case "$key" in *[![:space:]]*) ;; *) continue ;; esac; '
     "tr -d '\\r' < ~/.ssh/authorized_keys | grep -qxF -- \"$key\"; rc=$?; "
@@ -808,6 +805,13 @@ _ADD_AUTHORIZED_KEY_SCRIPT = (
     '[ -z "$(tail -c 1 ~/.ssh/authorized_keys)" ] || echo; '
     "printf '%s\\n' \"$key\"; } >> ~/.ssh/authorized_keys || exit 1; "
     "done"
+)
+
+_ADD_AUTHORIZED_KEY_SCRIPT = (
+    "umask 077 && "
+    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+    "touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && "
+    + _ADD_AUTHORIZED_KEY_LOOP
 )
 
 

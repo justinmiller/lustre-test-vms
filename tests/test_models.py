@@ -1056,7 +1056,7 @@ class TestDeploySshKey:
         self, tmp_path: Path
     ) -> None:
         """Special chars are literal; write failures on earlier lines fail."""
-        from ltvm_pkg.vm_net import _ADD_AUTHORIZED_KEY_SCRIPT
+        from ltvm_pkg.vm_net import _ADD_AUTHORIZED_KEY_LOOP
 
         weird = 'ssh-ed25519 AAAA -e "foo" $(id) .*[a-z]\\bar'
         self._append(tmp_path, weird)
@@ -1074,12 +1074,9 @@ class TestDeploySshKey:
             ak2 = ssh2 / "authorized_keys"
             ak2.write_text("ssh-ed25519 EXISTING\n")
             ak2.chmod(0o400)
-            loop_only = _ADD_AUTHORIZED_KEY_SCRIPT[
-                _ADD_AUTHORIZED_KEY_SCRIPT.index("while ") :
-            ]
             try:
                 r = subprocess.run(
-                    ["bash", "-c", loop_only],
+                    ["bash", "-c", _ADD_AUTHORIZED_KEY_LOOP],
                     input="ssh-ed25519 NEW\nssh-ed25519 EXISTING\n",
                     text=True,
                     capture_output=True,
