@@ -879,25 +879,27 @@ class TestFindVmcoreScript:
         )
         assert self._newest(tmp_path) == ""
 
-    def test_cmd_crash_collect_quotes_vmcore_path_in_ls(
+    def test_cmd_crash_collect_copies_debian_fallback_vmcore(
         self, tmp_vmdir: Path, tmp_path: Path
     ) -> None:
         kdir = tmp_path / "kdir"
         kdir.mkdir()
         (kdir / "vmlinux").write_bytes(b"ELF")
-        _seed_vm(tmp_vmdir, "vm1", kernel=str(kdir / "vmlinuz"))
-        spaced = "/var/crash/my dir/vmcore.202611061200"
+        vm = _seed_vm(tmp_vmdir, "vm1", kernel=str(kdir / "vmlinuz"))
+        dump = "/var/crash/202611061200/vmcore.202611061200"
         ssh_cmds: list[str] = []
+        scp_argvs: list[list[str]] = []
 
         def fake_ssh(ip: str, cmd: str, **kw) -> MagicMock:
             ssh_cmds.append(cmd)
             if cmd.startswith("find "):
-                return MagicMock(returncode=0, stdout=f"{spaced}\n", stderr="")
+                return MagicMock(returncode=0, stdout=f"{dump}\n", stderr="")
             return MagicMock(
                 returncode=0, stdout="-rw-r--r-- 1 root\n", stderr=""
             )
 
         def fake_scp(argv: list[str], **kw) -> MagicMock:
+            scp_argvs.append(argv)
             Path(argv[-1]).write_bytes(b"core")
             return MagicMock(returncode=0, stdout="", stderr="")
 
@@ -911,4 +913,6 @@ class TestFindVmcoreScript:
             )
 
         assert rc == EXIT_OK
-        assert f"ls -lh -- '{spaced}'" in ssh_cmds
+        assert vm_commands.find_vmcore_script() in ssh_cmds
+        assert f"ls -lh -- {dump}" in ssh_cmds
+        assert any(f"root@{vm.ip}:{dump}" in argv for argv in scp_argvs)
