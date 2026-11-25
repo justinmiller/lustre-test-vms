@@ -1693,6 +1693,28 @@ def _distribute_cluster_hosts(
     )
 
 
+def _sync_cluster_clocks(nodes: list, ips: dict[str, str]) -> list[str]:
+    """Ensure the host SNTP responder is up and sync each node's clock.
+
+    Non-fatal: returns the names of nodes whose SSH clock sync failed.
+    """
+    from . import time_sync
+    from .vm_state import GATEWAY
+
+    time_sync.ensure_time_server(GATEWAY)
+
+    def _one(node: Any) -> tuple[str, int, str]:
+        ok = time_sync.sync_guest_clock(ips[node.name])
+        return (node.name, 0 if ok else 1, "" if ok else "clock sync failed")
+
+    return _parallel_cluster_op(
+        nodes,
+        _one,
+        success_verb="clock synced",
+        failure_verb="clock sync warning",
+    )
+
+
 def _parallel_cluster_op(
     nodes: list,
     submit: Any,
@@ -2132,6 +2154,7 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     failed_hosts = _distribute_cluster_hosts(cluster.name, nodes, node_ips)
     if failed_hosts:
         die(f"/etc/hosts update failed for: {', '.join(failed_hosts)}")
+    _sync_cluster_clocks(nodes, node_ips)
     failed_pdsh = _parallel_cluster_op(
         nodes,
         lambda node: _ensure_pdsh(
@@ -2543,6 +2566,7 @@ def cmd_cluster_status(args: argparse.Namespace) -> None:
         }
         for node in nodes
     ]
+    from . import time_sync
     from .cluster_lustre_state import (
         lustre_state,
         print_lustre_state,
@@ -2555,6 +2579,8 @@ def cmd_cluster_status(args: argparse.Namespace) -> None:
     else:
         lustre, recovered = wait_recovery(cluster, wait)
 
+    clock = time_sync.cluster_clock_status(cluster)
+
     if use_json:
         print(
             json.dumps(
@@ -2565,6 +2591,7 @@ def cmd_cluster_status(args: argparse.Namespace) -> None:
                     "ost_count": cluster.ost_count or None,
                     "nodes": rows,
                     "lustre": lustre,
+                    "clock": clock,
                     **({} if recovered is None else {"recovered": recovered}),
                 },
                 indent=2,
@@ -2601,6 +2628,7 @@ def cmd_cluster_status(args: argparse.Namespace) -> None:
             f"  {node.name:<20} {node.ip:<18} {status:<8} {roles:<12}{disks}",
         )
     print_lustre_state(lustre)
+    time_sync.print_clock_status(clock)
     if recovered is False:
         die(f"recovery did not end in {wait}s")
 

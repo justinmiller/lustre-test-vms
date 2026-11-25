@@ -971,6 +971,9 @@ def provision_vm_ssh(
         wait_for_ssh(vm.ip, timeout, vm=vm)
         register_ssh_name(vm.name, vm.ip)
     deploy_ssh_key(vm.ip)
+    from . import time_sync
+
+    time_sync.sync_guest_clock(vm.ip)
 
 
 # ssh stops before connecting with these, so waiting cannot help.

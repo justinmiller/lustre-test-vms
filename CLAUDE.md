@@ -1033,6 +1033,25 @@ Root's filesystem only: a whole `sync` on a Lustre client whose
 servers are gone would hang.  An unreachable guest is warned about and
 stopped anyway; `--force` skips the sync.
 
+**Guest clock:** three layers keep guest wall clocks aligned with the
+host ([ltvm_pkg/time_sync.py](ltvm_pkg/time_sync.py)): QEMU passes
+`-rtc base=utc,clock=host` (plus `,driftfix=slew` on x86_64; aarch64's
+pl031 warns on `driftfix`); `provision_vm_ssh` (covering `create`,
+`start`, `restore`, `cluster create`) and `cluster deploy` run an SSH
+`date -u -s` sync unless `chrony` is already locked within 100 ms; and
+every image ships `chrony` configured by `rc.local` against `fc_gw`
+(plus `refclock PHC /dev/ptp0` when present, `makestep 1.0 -1` so post-sleep
+jumps recover immediately).  An on-demand rootless SNTP responder binds
+`fc_gw:12300` (`LTVM_TIME_PORT`, `LTVM_TIME_SERVER=0` to disable) and
+exits after 10 minutes idle; cloud exports without `fc_gw=` keep the
+distro's stock `chrony` config.  Note that port 12300 is unprivileged,
+so any local user on a shared host can claim it first and serve guests
+arbitrary time (point guests at a host `chronyd`/`ntpd` via
+`LTVM_TIME_PORT=123` + `LTVM_TIME_SERVER=0` where local users are
+untrusted).  `ltvm cluster status` probes every node's `chrony` lock state and reports
+inter-node and host-to-VM clock skew (warning when any node is
+unsynchronized or skewed >1 s).
+
 **Guest tick:** an x86_64 guest under KVM boots with `nohz=off`
 (`qemu_run.KVM_TICK_ARGS`).  Tickless idle reprograms the TSC deadline
 timer on every idle entry and exit, a trapped MSR write each, so every

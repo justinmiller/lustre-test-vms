@@ -665,6 +665,53 @@ def _shmrdma_daemons() -> str | None:
     return " ".join(stopped) or None
 
 
+_STOP_TIME_SYNC = (
+    "import sys; sys.path.insert(0, sys.argv[1]); "
+    "from ltvm_pkg import time_sync; "
+    "ports = time_sync.stop_all_time_servers(int(sys.argv[2])); "
+    "print(','.join(str(p) for p in ports))"
+)
+
+
+def _time_sync_responder() -> str | None:
+    from . import time_sync
+    from .vm_state import GATEWAY
+
+    me = os.geteuid()
+    stopped = [f"port {p}" for p in time_sync.stop_all_time_servers(me)]
+    if me != 0:
+        port = time_sync.configured_port()
+        root_dir = time_sync.state_dir(0)
+        has_root_pids = False
+        try:
+            has_root_pids = root_dir.is_dir() and any(
+                root_dir.glob("timesync-*.pid")
+            )
+        except OSError:
+            has_root_pids = False
+        if has_root_pids or (
+            port > 0 and time_sync.probe_time_server(GATEWAY, port, timeout=0.1)
+        ):
+            root = Path(__file__).resolve().parent.parent
+            r = sudo_run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    _STOP_TIME_SYNC,
+                    str(root),
+                    "0",
+                ],
+                check=False,
+                quiet=True,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                for p in r.stdout.strip().split(","):
+                    if p:
+                        stopped.append(f"root port {p}")
+    return f"stopped ({', '.join(stopped)})" if stopped else None
+
+
 def _forget_stray_names(s: Survey) -> str | None:
     if not s.stray_names:
         return None
@@ -1017,6 +1064,7 @@ def steps(
     out: list[tuple[str, StepFn]] = [
         ("vms", lambda: _destroy_vms(s, use_json)),
         ("shmrdma daemons", _shmrdma_daemons),
+        ("time sync responder", _time_sync_responder),
         ("vm names", lambda: _forget_stray_names(s)),
         ("podman images", lambda: _remove_podman_images(s, c)),
         ("podman machine", lambda: _remove_podman_machine(s, c)),

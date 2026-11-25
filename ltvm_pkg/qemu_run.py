@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import numa_dist, rootless, shmrdma, site_config, vm_state
+from . import numa_dist, rootless, shmrdma, site_config, time_sync, vm_state
 from .host_setup import is_macos, socket_vmnet_socket_path
 from .nic_cmdline import network_names, prefixes
 from .nic_spec import speed_device_opts
@@ -1025,7 +1025,7 @@ def launch_qemu(vm: VMInfo, *, wait_seconds: int = 0) -> None:
             shortfall = _memory_shortfall(vm)
             if shortfall is None:
                 _start_qemu(vm)
-                return
+                break
         if not shortfall.fits_when_idle:
             die(shortfall.message)
         remaining = deadline - time.monotonic()
@@ -1043,6 +1043,10 @@ def launch_qemu(vm: VMInfo, *, wait_seconds: int = 0) -> None:
             )
             waited = True
         time.sleep(min(_MEMORY_POLL_SECONDS, remaining))
+
+    # Outside the launch lock: starting/probing the responder must not
+    # serialize concurrent VM launches.
+    time_sync.ensure_time_server(GATEWAY)
 
 
 def _shmrdma_preflight(vm: VMInfo) -> None:
@@ -1090,6 +1094,20 @@ NMI_PANIC_ARGS = (
 # A tickless guest reprograms its TSC deadline timer, a trapped MSR
 # write, on every idle entry and exit (docs/VM_EXIT_OVERHEAD.md).
 KVM_TICK_ARGS = " nohz=off"
+
+
+def rtc_args(arch: str) -> list[str]:
+    """QEMU ``-rtc`` arguments for guest wall-clock accuracy.
+
+    ``driftfix=slew`` is an x86 mc146818rtc feature; aarch64's pl031
+    warns that it is unavailable on that machine.
+    """
+    opts = (
+        "base=utc,clock=host,driftfix=slew"
+        if arch in ("", "x86_64")
+        else "base=utc,clock=host"
+    )
+    return ["-rtc", opts]
 
 
 def _start_qemu(vm: VMInfo) -> None:
@@ -1166,6 +1184,7 @@ def _start_qemu(vm: VMInfo) -> None:
         f"{fc_nic_numa_fragment}"
         f"{network_names(vm)}"
         f"{' fc_shmrdma=1' if vm.shmrdma else ''}"
+        f"{time_sync.cmdline_args(macos=is_macos())}"
     )
     if vm.arch in ("", "x86_64"):
         boot_args += NMI_PANIC_ARGS
@@ -1407,6 +1426,7 @@ def _start_qemu(vm: VMInfo) -> None:
             shared=vm.shared_ram,
             host_node=bind_node,
         ),
+        *rtc_args(arch),
         "-kernel",
         str(kernel),
         "-append",

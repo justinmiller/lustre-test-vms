@@ -29,6 +29,7 @@ iproute
 iputils
 openssh-server
 openssh-clients
+chrony
 # SMC sockets over RDMA (smc_run, smcss, smcd ueid): shmrdma
 smc-tools
 
