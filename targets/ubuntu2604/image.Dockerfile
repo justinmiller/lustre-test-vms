@@ -7,6 +7,17 @@ FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Keep downloaded .debs (Ubuntu's image deletes them after each install)
+# in the build cache mounted at /var/cache/apt on the apt steps below, so
+# a retry after a failure does not download everything again.  The cache
+# lives outside the image layers.  Both settings are put back in the last
+# step, so what ships behaves like the stock ubuntu:26.04 image.
+RUN if [ -f /etc/apt/apt.conf.d/docker-clean ]; then \
+        mv /etc/apt/apt.conf.d/docker-clean /etc/apt/docker-clean.ltvm-saved; \
+    fi \
+    && printf 'APT::Keep-Downloaded-Packages "true";\nDir::Cache::pkgcache "";\nDir::Cache::srcpkgcache "";\nAcquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+        > /etc/apt/apt.conf.d/99-ltvm-keep-packages
+
 # Copy shared package lists and the ubuntu-specific name map.
 COPY common/packages-base.txt   /tmp/packages-base.txt
 COPY common/packages-test.txt   /tmp/packages-test.txt
@@ -28,7 +39,7 @@ RUN if [ -f /etc/default/locale ] && [ ! -L /etc/default/locale ] \
 # package-map.txt, drop "skip" entries (mapped to "-"), and install.
 # Packages without a mapping pass through unchanged (assumes the
 # name is identical on both distros).
-RUN apt-get update \
+RUN --mount=type=cache,id=ltvm-apt-ubuntu2604,target=/var/cache/apt,sharing=locked apt-get update \
     && cat /tmp/packages-base.txt /tmp/packages-test.txt \
            /tmp/packages-debug.txt /tmp/packages-server.txt \
            /tmp/packages-os.txt \
@@ -76,6 +87,8 @@ RUN chmod 0755 /usr/local/sbin/setup-nic-softroce.sh \
 # IOR and iozone do not compile as GCC 15's default C23, and neither
 # takes the compiler from one variable (IOR goes through mpicc), so
 # put gnu17 cc/gcc wrappers first on PATH for this step only.
+# Its own apt-get install has no cache mount, so its .debs and lists are
+# cleaned here rather than left in the layer.
 RUN mkdir /tmp/gnu17 \
     && for c in cc gcc; do \
          printf '#!/bin/sh\nexec /usr/bin/gcc -std=gnu17 "$@"\n' \
@@ -83,7 +96,8 @@ RUN mkdir /tmp/gnu17 \
          chmod 0755 /tmp/gnu17/$c; \
        done \
     && PATH=/tmp/gnu17:$PATH bash /tmp/build-tools.sh \
-    && rm -rf /tmp/gnu17
+    && rm -rf /tmp/gnu17 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Lustre-patched e2fsprogs (pinned release).  Its libraries land in
 # /usr/lib, which ld.so searches after the multiarch directory holding
@@ -110,5 +124,9 @@ RUN bash /tmp/setup-kdump.sh
 RUN bash /tmp/setup-services.sh unattended-upgrades.service snapd.service snapd.socket tmp.mount
 RUN systemctl disable krb5-kdc.service krb5-admin-server.service 2>/dev/null || true
 
-# Clean up
-RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/*
+# Clean up, and put back the stock apt settings changed at the top.
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* \
+    && rm -f /etc/apt/apt.conf.d/99-ltvm-keep-packages \
+    && if [ -f /etc/apt/docker-clean.ltvm-saved ]; then \
+           mv /etc/apt/docker-clean.ltvm-saved /etc/apt/apt.conf.d/docker-clean; \
+       fi

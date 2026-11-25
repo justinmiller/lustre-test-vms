@@ -42,12 +42,15 @@ rsync
 git
 curl
 
-# Build tools (needed by build-tools.sh for IOR, pjdfstest, etc.)
+# Build tools (needed by build-tools.sh, build-e2fsprogs.sh, connectathon,
+# and shmrdma's rdma-core provider build)
 gcc
 make
 autoconf
 automake
 libtool
+cmake
+pkgconf-pkg-config
 
 # Filesystem tools
 e2fsprogs

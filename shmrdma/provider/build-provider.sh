@@ -42,17 +42,43 @@ if ! command -v cmake >/dev/null || ! command -v pkg-config >/dev/null ||
 	elif command -v zypper >/dev/null; then
 		zypper -n -q install cmake pkg-config python3
 	else
-		apt-get -q update && apt-get -y -q install cmake pkg-config python3
+		apt-get -q update && \
+			apt-get -y -q install --no-install-recommends \
+				cmake pkg-config python3 && \
+			rm -rf /var/lib/apt/lists/*
 	fi
 fi
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+tmpf=""
+trap 'rm -rf "$work" ${tmpf:+"$tmpf"}' EXIT
+cache="${LTVM_RDMA_CORE_CACHE:-}"
+cached="${cache:+${cache}/rdma-core-${ver}.tar.gz}"
 url="https://github.com/linux-rdma/rdma-core/releases/download/v$ver/rdma-core-$ver.tar.gz"
-if ! curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 \
-	-o "$work/src.tar.gz" "$url" || ! tar xzf "$work/src.tar.gz" -C "$work"; then
-	log "could not fetch $url; not installed"
-	exit 0
+if [[ -n "$cached" && -s "$cached" ]] && tar xzf "$cached" -C "$work" 2>/dev/null; then
+	log "using cached $cached"
+else
+	[[ -n "$cached" && -e "$cached" ]] && rm -f "$cached" 2>/dev/null || true
+	rm -rf "$work/rdma-core-$ver"
+	if ! curl -fsSL --retry 3 --connect-timeout 30 --max-time 300 \
+		-o "$work/src.tar.gz" "$url" || ! tar xzf "$work/src.tar.gz" -C "$work"; then
+		log "could not fetch $url; not installed"
+		exit 0
+	fi
+	if [[ -n "$cached" ]]; then
+		mkdir -p "$cache" 2>/dev/null || true
+		tmpf=$(mktemp "${cache}/.rdma-core-${ver}.XXXXXX" 2>/dev/null || true)
+		if [[ -n "$tmpf" ]]; then
+			if cp "$work/src.tar.gz" "$tmpf" 2>/dev/null \
+				&& chmod 0644 "$tmpf" 2>/dev/null \
+				&& mv -f "$tmpf" "$cached" 2>/dev/null; then
+				tmpf=""
+			else
+				rm -f "$tmpf" 2>/dev/null || true
+				tmpf=""
+			fi
+		fi
+	fi
 fi
 tree="$work/rdma-core-$ver"
 mkdir "$tree/providers/shmrdma"
