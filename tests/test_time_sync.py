@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import socket
 import struct
@@ -14,10 +16,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ltvm_pkg import qemu_run, time_sync, vm_cluster, vm_net
+from ltvm_pkg.vm_state import ClusterInfo, ClusterNode, VMInfo, VMNotFound
 
 # Capture real functions before conftest's autouse fixture patches them.
 _REAL_ENSURE_TIME_SERVER = time_sync.ensure_time_server
 _REAL_SYNC_GUEST_CLOCK = time_sync.sync_guest_clock
+_REAL_CLUSTER_CLOCK_STATUS = time_sync.cluster_clock_status
 _REAL_PROBE_TIME_SERVER = time_sync.probe_time_server
 _REAL_STOP_TIME_SERVER = time_sync.stop_time_server
 _REAL_STOP_ALL_TIME_SERVERS = time_sync.stop_all_time_servers
@@ -672,7 +676,7 @@ Leap status     : Not synchronised
 """
 
 
-class TestChronyTrackingParser:
+class TestClockSkewReporting:
     def test_parse_chrony_locked_fast(self) -> None:
         info = time_sync.parse_chrony_tracking(_CHRONY_LOCKED_FAST)
         assert info["available"] is True
@@ -702,3 +706,420 @@ class TestChronyTrackingParser:
         assert info["synchronized"] is False
         assert info["source"] is None
         assert info["offset_ms"] is None
+
+    def test_probe_node_clock_missing_or_stopped(self) -> None:
+        node = ClusterNode(name="co1-mds", ip="192.168.100.10", roles=["mds"])
+        with patch(
+            "ltvm_pkg.vm_state.VMInfo.load", side_effect=VMNotFound("x")
+        ):
+            row = time_sync.probe_node_clock(node)
+        assert row["reachable"] is False
+        assert row["chrony"] == "unreachable"
+        assert row["synchronized"] is False
+
+        vm = VMInfo(name="co1-mds", ip="192.168.100.10")
+        with (
+            patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
+            patch("ltvm_pkg.qemu_run.is_running", return_value=False),
+        ):
+            row = time_sync.probe_node_clock(node)
+        assert row["reachable"] is False
+        assert row["chrony"] == "unreachable"
+
+    def test_probe_node_clock_ssh_timeout(self) -> None:
+        node = ClusterNode(name="co1-mds", ip="192.168.100.10", roles=["mds"])
+        vm = VMInfo(name="co1-mds", ip="192.168.100.10")
+        with (
+            patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
+            patch("ltvm_pkg.qemu_run.is_running", return_value=True),
+            patch(
+                "ltvm_pkg.vm_net.run_ssh",
+                side_effect=subprocess.TimeoutExpired("ssh", 10),
+            ),
+        ):
+            row = time_sync.probe_node_clock(node)
+        assert row["reachable"] is False
+        assert row["chrony"] == "unreachable"
+
+    def test_probe_node_clock_locked_uses_chrony_offset(self) -> None:
+        node = ClusterNode(name="co1-mds", ip="192.168.100.10", roles=["mds"])
+        vm = VMInfo(name="co1-mds", ip="192.168.100.10")
+        stdout = f"{_CHRONY_LOCKED_FAST}@@\n1763940000.520000000\n"
+        with (
+            patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
+            patch("ltvm_pkg.qemu_run.is_running", return_value=True),
+            patch(
+                "ltvm_pkg.time_sync.time.time",
+                side_effect=[1763940000.5, 1763940000.52],
+            ),
+            patch(
+                "ltvm_pkg.vm_net.run_ssh",
+                return_value=MagicMock(returncode=0, stdout=stdout, stderr=""),
+            ),
+        ):
+            row = time_sync.probe_node_clock(node)
+        assert row["reachable"] is True
+        assert row["chrony"] == "locked"
+        assert row["synchronized"] is True
+        assert row["source"] == "_gateway"
+        assert row["offset_ms"] == pytest.approx(0.049)
+        assert row["chrony_offset_ms"] == pytest.approx(0.049)
+        assert row["host_offset_ms"] == pytest.approx(0.0)
+
+    def test_probe_node_clock_locked_wallclock_jump_uses_host_offset(
+        self,
+    ) -> None:
+        node = ClusterNode(name="co1-mds", ip="192.168.100.10", roles=["mds"])
+        vm = VMInfo(name="co1-mds", ip="192.168.100.10")
+        # Guest clock jumped +5 s since chrony's last poll.
+        stdout = f"{_CHRONY_LOCKED_FAST}@@\n1763940005.520000000\n"
+        with (
+            patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
+            patch("ltvm_pkg.qemu_run.is_running", return_value=True),
+            patch(
+                "ltvm_pkg.time_sync.time.time",
+                side_effect=[1763940000.5, 1763940000.52],
+            ),
+            patch(
+                "ltvm_pkg.vm_net.run_ssh",
+                return_value=MagicMock(returncode=0, stdout=stdout, stderr=""),
+            ),
+        ):
+            row = time_sync.probe_node_clock(node)
+        assert row["chrony"] == "locked"
+        assert row["offset_ms"] == pytest.approx(5000.0)
+        assert row["chrony_offset_ms"] == pytest.approx(0.049)
+        assert row["host_offset_ms"] == pytest.approx(5000.0)
+
+    def test_probe_node_clock_unlocked_falls_back_to_host_offset(self) -> None:
+        node = ClusterNode(name="co1-oss", ip="192.168.100.11", roles=["oss"])
+        vm = VMInfo(name="co1-oss", ip="192.168.100.11")
+        stdout = f"{_CHRONY_UNLOCKED}@@\n1763940000.750000000\n"
+        with (
+            patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
+            patch("ltvm_pkg.qemu_run.is_running", return_value=True),
+            patch(
+                "ltvm_pkg.time_sync.time.time",
+                side_effect=[1763940000.5, 1763940000.5],
+            ),
+            patch(
+                "ltvm_pkg.vm_net.run_ssh",
+                return_value=MagicMock(returncode=0, stdout=stdout, stderr=""),
+            ),
+        ):
+            row = time_sync.probe_node_clock(node)
+        assert row["reachable"] is True
+        assert row["chrony"] == "unlocked"
+        assert row["synchronized"] is False
+        assert row["offset_ms"] == pytest.approx(250.0)
+
+    def test_summarize_all_locked_no_warnings(self) -> None:
+        rows = [
+            {
+                "node": "co1-mds",
+                "reachable": True,
+                "chrony": "locked",
+                "synchronized": True,
+                "source": "_gateway",
+                "offset_ms": 0.05,
+            },
+            {
+                "node": "co1-oss",
+                "reachable": True,
+                "chrony": "locked",
+                "synchronized": True,
+                "source": "_gateway",
+                "offset_ms": -0.03,
+            },
+        ]
+        summary = time_sync.summarize_clock_status(rows)
+        assert summary["inter_node_skew_ms"] == pytest.approx(0.08)
+        assert summary["max_host_offset_ms"] == pytest.approx(0.05)
+        assert summary["max_skew_ms"] == pytest.approx(0.08)
+        assert summary["warn_threshold_ms"] == pytest.approx(1000.0)
+        assert summary["warnings"] == []
+
+    def test_summarize_warns_on_inter_node_host_skew_and_unsynced(self) -> None:
+        rows = [
+            {
+                "node": "co1-mds",
+                "reachable": True,
+                "chrony": "locked",
+                "synchronized": True,
+                "source": "_gateway",
+                "offset_ms": 0.1,
+            },
+            {
+                "node": "co1-oss",
+                "reachable": True,
+                "chrony": "unlocked",
+                "synchronized": False,
+                "source": None,
+                "offset_ms": 1250.4,
+            },
+            {
+                "node": "co1-cli",
+                "reachable": False,
+                "chrony": "unreachable",
+                "synchronized": False,
+                "source": None,
+                "offset_ms": None,
+            },
+        ]
+        summary = time_sync.summarize_clock_status(rows)
+        assert summary["inter_node_skew_ms"] == pytest.approx(1250.3)
+        assert summary["max_host_offset_ms"] == pytest.approx(1250.4)
+        assert summary["max_skew_ms"] == pytest.approx(1250.4)
+        assert any(
+            "unsynchronized clock on: co1-oss" in w for w in summary["warnings"]
+        )
+        assert any(
+            "inter-node clock skew 1.25 s exceeds 1 s" in w
+            for w in summary["warnings"]
+        )
+        assert any(
+            "host-to-VM clock skew 1.25 s exceeds 1 s" in w
+            for w in summary["warnings"]
+        )
+
+    def test_summarize_catches_uniform_host_drift_even_when_inter_node_small(
+        self,
+    ) -> None:
+        rows = [
+            {
+                "node": "co1-mds",
+                "reachable": True,
+                "chrony": "unavailable",
+                "synchronized": False,
+                "source": None,
+                "offset_ms": -4289414.1,
+            },
+            {
+                "node": "co1-oss",
+                "reachable": True,
+                "chrony": "unavailable",
+                "synchronized": False,
+                "source": None,
+                "offset_ms": -4289960.0,
+            },
+        ]
+        summary = time_sync.summarize_clock_status(rows)
+        assert summary["inter_node_skew_ms"] == pytest.approx(545.9)
+        assert summary["max_host_offset_ms"] == pytest.approx(4289960.0)
+        assert summary["max_skew_ms"] == pytest.approx(4289960.0)
+        assert not any(
+            w.startswith("inter-node clock skew") for w in summary["warnings"]
+        )
+        assert any(
+            "host-to-VM clock skew 4290.0 s exceeds 1 s" in w
+            for w in summary["warnings"]
+        )
+
+    def test_summarize_detects_external_ntp_disagreeing_with_host(self) -> None:
+        rows = [
+            {
+                "node": "co1-mds",
+                "reachable": True,
+                "chrony": "locked",
+                "synchronized": True,
+                "source": "ntp.example.com",
+                "offset_ms": 0.1,
+                "chrony_offset_ms": 0.1,
+                "host_offset_ms": 2500.0,
+            }
+        ]
+        summary = time_sync.summarize_clock_status(rows)
+        assert summary["inter_node_skew_ms"] is None
+        assert summary["max_host_offset_ms"] == pytest.approx(2500.0)
+        assert summary["max_skew_ms"] == pytest.approx(2500.0)
+        assert any(
+            "host-to-VM clock skew 2.50 s exceeds 1 s" in w
+            for w in summary["warnings"]
+        )
+
+    def test_summarize_sub_second_drift_does_not_trip_skew_warning(
+        self,
+    ) -> None:
+        rows = [
+            {
+                "node": "co1-mds",
+                "reachable": True,
+                "chrony": "locked",
+                "synchronized": True,
+                "source": "_gateway",
+                "offset_ms": 400.0,
+            },
+            {
+                "node": "co1-oss",
+                "reachable": True,
+                "chrony": "locked",
+                "synchronized": True,
+                "source": "_gateway",
+                "offset_ms": -400.0,
+            },
+        ]
+        summary = time_sync.summarize_clock_status(rows)
+        assert summary["inter_node_skew_ms"] == pytest.approx(800.0)
+        assert summary["max_host_offset_ms"] == pytest.approx(400.0)
+        assert summary["warnings"] == []
+
+    def test_cluster_clock_status_probes_all_nodes(self) -> None:
+        cluster = ClusterInfo(
+            name="co1",
+            nodes=[
+                {"name": "co1-mds", "ip": "192.168.100.10", "roles": ["mds"]},
+                {"name": "co1-oss", "ip": "192.168.100.11", "roles": ["oss"]},
+            ],
+        )
+        fake_rows = {
+            "co1-mds": {
+                "node": "co1-mds",
+                "reachable": True,
+                "chrony": "locked",
+                "synchronized": True,
+                "source": "_gateway",
+                "offset_ms": 0.04,
+            },
+            "co1-oss": {
+                "node": "co1-oss",
+                "reachable": True,
+                "chrony": "locked",
+                "synchronized": True,
+                "source": "_gateway",
+                "offset_ms": -0.02,
+            },
+        }
+        with patch(
+            "ltvm_pkg.time_sync.probe_node_clock",
+            side_effect=lambda n: fake_rows[n.name],
+        ):
+            summary = _REAL_CLUSTER_CLOCK_STATUS(cluster)
+        assert summary["inter_node_skew_ms"] == pytest.approx(0.06)
+        assert summary["max_host_offset_ms"] == pytest.approx(0.04)
+        assert summary["max_skew_ms"] == pytest.approx(0.06)
+        assert summary["warnings"] == []
+        assert [r["node"] for r in summary["nodes"]] == ["co1-mds", "co1-oss"]
+
+    def test_print_clock_status_human_output_and_warnings(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        time_sync.print_clock_status(None)
+        time_sync.print_clock_status({"nodes": []})
+        assert capsys.readouterr().out == ""
+
+        clock = time_sync.summarize_clock_status(
+            [
+                {
+                    "node": "co1-mds",
+                    "reachable": True,
+                    "chrony": "locked",
+                    "synchronized": True,
+                    "source": "_gateway",
+                    "offset_ms": 0.049,
+                },
+                {
+                    "node": "co1-oss",
+                    "reachable": True,
+                    "chrony": "unlocked",
+                    "synchronized": False,
+                    "source": None,
+                    "offset_ms": 1810.0,
+                },
+                {
+                    "node": "co1-cli",
+                    "reachable": False,
+                    "chrony": "unreachable",
+                    "synchronized": False,
+                    "source": None,
+                    "offset_ms": None,
+                },
+            ]
+        )
+        time_sync.print_clock_status(clock)
+        out = capsys.readouterr().out
+        assert "clock:" in out
+        assert "co1-mds" in out and "locked" in out and "(_gateway)" in out
+        assert "+0.049 ms" in out
+        assert "co1-oss" in out and "unlocked" in out and "+1.81 s" in out
+        assert "co1-cli" in out and "unreachable" in out
+        assert (
+            "max skew: 1.81 s (inter-node), 1.81 s (vs host)  WARNING: exceeds 1 s"
+            in out
+        )
+        assert "WARNING: unsynchronized clock on: co1-oss" in out
+
+    def test_cmd_cluster_status_includes_clock_json_and_human(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cluster = ClusterInfo(
+            name="co1",
+            nodes=[
+                {"name": "co1-mds", "ip": "192.168.100.10", "roles": ["mds"]},
+                {"name": "co1-oss", "ip": "192.168.100.11", "roles": ["oss"]},
+            ],
+        )
+        clock_data = time_sync.summarize_clock_status(
+            [
+                {
+                    "node": "co1-mds",
+                    "reachable": True,
+                    "chrony": "locked",
+                    "synchronized": True,
+                    "source": "_gateway",
+                    "offset_ms": 0.04,
+                },
+                {
+                    "node": "co1-oss",
+                    "reachable": True,
+                    "chrony": "locked",
+                    "synchronized": True,
+                    "source": "_gateway",
+                    "offset_ms": -0.02,
+                },
+            ]
+        )
+        with (
+            patch("ltvm_pkg.vm_cluster.ClusterInfo.load", return_value=cluster),
+            patch("ltvm_pkg.vm_cluster._node_state", return_value="up"),
+            patch(
+                "ltvm_pkg.time_sync.cluster_clock_status",
+                return_value=clock_data,
+            ),
+        ):
+            vm_cluster.cmd_cluster_status(
+                argparse.Namespace(name="co1", json=True, wait_recovery=None)
+            )
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["clock"]["max_skew_ms"] == pytest.approx(0.06)
+            assert payload["clock"]["inter_node_skew_ms"] == pytest.approx(0.06)
+            assert payload["clock"]["max_host_offset_ms"] == pytest.approx(0.04)
+            assert payload["clock"]["warnings"] == []
+            assert len(payload["clock"]["nodes"]) == 2
+
+            vm_cluster.cmd_cluster_status(
+                argparse.Namespace(name="co1", json=False, wait_recovery=None)
+            )
+            human = capsys.readouterr().out
+            assert "clock:" in human
+            assert (
+                "max skew: 0.060 ms (inter-node), 0.040 ms (vs host)" in human
+            )
+
+    def test_slow_ssh_rtt_does_not_false_warn_host_skew(self) -> None:
+        """Slow SSH probe RTT must not trigger false host-to-VM skew warnings."""
+        clock = time_sync.summarize_clock_status(
+            [
+                {
+                    "node": "co1-mds",
+                    "reachable": True,
+                    "chrony": "locked",
+                    "synchronized": True,
+                    "source": "_gateway",
+                    "offset_ms": 0.05,
+                    "host_offset_ms": -1200.0,
+                    "rtt_ms": 1500.0,
+                }
+            ]
+        )
+        assert clock["max_host_offset_ms"] == pytest.approx(0.05)
+        assert clock["warnings"] == []

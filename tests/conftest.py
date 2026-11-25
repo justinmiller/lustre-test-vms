@@ -558,6 +558,19 @@ def _neutralize_time_sync(monkeypatch: pytest.MonkeyPatch) -> object:
         patch("ltvm_pkg.time_sync.stop_time_server", new=_returns(False)),
         patch("ltvm_pkg.time_sync.stop_all_time_servers", new=_returns([])),
         patch("ltvm_pkg.time_sync.probe_time_server", new=_returns(False)),
+        patch(
+            "ltvm_pkg.time_sync.cluster_clock_status",
+            new=_returns(
+                {
+                    "nodes": [],
+                    "max_skew_ms": None,
+                    "inter_node_skew_ms": None,
+                    "max_host_offset_ms": None,
+                    "warn_threshold_ms": 1000.0,
+                    "warnings": [],
+                }
+            ),
+        ),
     ):
         yield
 

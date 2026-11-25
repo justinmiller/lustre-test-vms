@@ -43,8 +43,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .vm_state import ClusterInfo, ClusterNode
 
 log = logging.getLogger(__name__)
 
@@ -679,6 +683,18 @@ def sync_guest_clock(ip: str, *, timeout: int = 10) -> bool:
     return True
 
 
+# Warn in `ltvm cluster status` when inter-node or host-to-VM skew
+# exceeds this threshold (1 second).  Kerberos fails at 300 s and
+# Lustre test timestamps/timeouts drift well before that; 1 s catches
+# broken/unsynchronized chrony or post-sleep drift without false
+# positives from SSH round-trip latency on unlocked guests.
+SKEW_WARN_MS = 1000.0
+_CLOCK_PROBE_TIMEOUT = 10
+# If chrony's NTP offset and SSH wall-clock offset disagree by more
+# than this, the guest is likely synced to an external source whose
+# clock differs from the host.
+_HOST_CHRONY_DISAGREE_MS = 500.0
+
 _REF_ID_RE = re.compile(r"^Reference ID\s*:\s*([0-9A-Fa-f]+)\s*\(([^)]*)\)")
 _SYS_TIME_RE = re.compile(
     r"^System time\s*:\s*([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"
@@ -745,6 +761,273 @@ def _parse_guest_timestamp(raw: str) -> float | None:
     # Minimal date implementations without %N print e.g. "1700000000.%N".
     m = re.match(r"^(\d+)", line)
     return float(m.group(1)) if m else None
+
+
+def probe_node_clock(
+    node: ClusterNode, *, timeout: int = _CLOCK_PROBE_TIMEOUT
+) -> dict[str, Any]:
+    """Probe one cluster node's chrony lock state and clock offset over SSH.
+
+    A stopped, missing, or unresponsive node is reported as unreachable
+    rather than waited for.
+    """
+    from .qemu_run import is_running
+    from .vm_net import run_ssh
+    from .vm_state import VMInfo, VMNotFound
+
+    unreachable: dict[str, Any] = {
+        "node": node.name,
+        "reachable": False,
+        "chrony": "unreachable",
+        "synchronized": False,
+        "source": None,
+        "offset_ms": None,
+        "chrony_offset_ms": None,
+        "host_offset_ms": None,
+        "rtt_ms": None,
+    }
+    try:
+        vm = VMInfo.load(node.name)
+    except (VMNotFound, ValueError):
+        return unreachable
+    if not is_running(vm):
+        return unreachable
+
+    # Use `chronyc -n` to skip reverse-DNS lookups on the refclock IP
+    # (which can stall for 5-15s on distros without nss-myhostname) and
+    # run `date` last so its timestamp sits right next to host `t1`,
+    # avoiding SSH connect/auth handshake latency in `host_offset_ms`.
+    cmd = "chronyc -n tracking 2>/dev/null; echo @@; date +%s.%N 2>/dev/null"
+    t0 = time.time()
+    try:
+        r = run_ssh(vm.ip, cmd, timeout=timeout, retry_connect=False)
+    except (OSError, subprocess.SubprocessError):
+        return unreachable
+    t1 = time.time()
+
+    parts = (r.stdout or "").split("@@\n", 1)
+    if r.returncode == 255 or len(parts) != 2:
+        return unreachable
+
+    tracking = parse_chrony_tracking(parts[0])
+    guest_ts = _parse_guest_timestamp(parts[1])
+    host_offset_ms = (
+        round((guest_ts - t1) * 1000.0, 3) if guest_ts is not None else None
+    )
+    rtt_ms = max(0.0, (t1 - t0) * 1000.0)
+    chrony_offset_ms = (
+        round(tracking["offset_ms"], 3)
+        if tracking["offset_ms"] is not None
+        else None
+    )
+    if tracking["synchronized"]:
+        chrony_state = "locked"
+        if (
+            chrony_offset_ms is not None
+            and host_offset_ms is not None
+            and abs(host_offset_ms - chrony_offset_ms)
+            > max(_HOST_CHRONY_DISAGREE_MS, rtt_ms)
+        ):
+            # Wall clock jumped since chrony's last poll, or chrony is
+            # locked to a source whose clock disagrees with the host.
+            effective_offset: float | None = host_offset_ms
+        elif chrony_offset_ms is not None:
+            effective_offset = chrony_offset_ms
+        else:
+            effective_offset = host_offset_ms
+    elif tracking["available"]:
+        chrony_state = "unlocked"
+        effective_offset = host_offset_ms
+    else:
+        chrony_state = "unavailable"
+        effective_offset = host_offset_ms
+
+    return {
+        "node": node.name,
+        "reachable": True,
+        "chrony": chrony_state,
+        "synchronized": tracking["synchronized"],
+        "source": tracking["source"],
+        "offset_ms": effective_offset,
+        "chrony_offset_ms": chrony_offset_ms,
+        "host_offset_ms": host_offset_ms,
+        "rtt_ms": round(rtt_ms, 3),
+    }
+
+
+def _node_host_offset_ms(row: dict[str, Any]) -> float | None:
+    """Best estimate of a reachable node's offset relative to the host (ms).
+
+    Uses chrony's sub-ms offset when locked to the host SNTP responder,
+    falling back to the SSH-bracketed wall-clock offset when unlocked,
+    when chrony is absent, or when chrony's reference disagrees with the
+    host by more than ``max(_HOST_CHRONY_DISAGREE_MS, rtt_ms)``.
+    """
+    if not row.get("reachable"):
+        return None
+    off = row.get("offset_ms")
+    host_off = row.get("host_offset_ms")
+    rtt_ms = float(row.get("rtt_ms") or 0.0)
+    disagree_ms = max(_HOST_CHRONY_DISAGREE_MS, rtt_ms)
+    if row.get("synchronized") and off is not None:
+        if (
+            host_off is not None
+            and abs(float(host_off) - float(off)) > disagree_ms
+        ):
+            return float(host_off)
+        return float(off)
+    if host_off is not None:
+        return float(host_off)
+    return float(off) if off is not None else None
+
+
+def _fmt_threshold_ms(val: float) -> str:
+    if val >= 1000.0 and val % 1000.0 == 0:
+        return f"{int(val // 1000)} s"
+    if val >= 1000.0:
+        return f"{val / 1000.0:.2f} s"
+    return f"{val:.0f} ms"
+
+
+def _fmt_offset_ms(val: float, *, signed: bool = True) -> str:
+    sign = "+" if signed else ""
+    mag = abs(val)
+    if mag >= 10_000.0:
+        return f"{val / 1000.0:{sign}.1f} s"
+    if mag >= 1_000.0:
+        return f"{val / 1000.0:{sign}.2f} s"
+    if mag >= 1.0:
+        return f"{val:{sign}.1f} ms"
+    return f"{val:{sign}.3f} ms"
+
+
+def summarize_clock_status(
+    rows: list[dict[str, Any]],
+    *,
+    warn_threshold_ms: float = SKEW_WARN_MS,
+) -> dict[str, Any]:
+    """Compute inter-node and host-to-VM skew and warnings from node rows."""
+    offsets = [
+        float(r["offset_ms"])
+        for r in rows
+        if r.get("reachable") and r.get("offset_ms") is not None
+    ]
+    inter_node_skew_ms = (
+        round(max(offsets) - min(offsets), 3) if len(offsets) >= 2 else None
+    )
+
+    host_offsets = [
+        off for r in rows if (off := _node_host_offset_ms(r)) is not None
+    ]
+    max_host_offset_ms = (
+        round(max(abs(o) for o in host_offsets), 3) if host_offsets else None
+    )
+
+    skew_candidates = [
+        v for v in (inter_node_skew_ms, max_host_offset_ms) if v is not None
+    ]
+    max_skew_ms = max(skew_candidates) if skew_candidates else None
+
+    warnings: list[str] = []
+    unsynced = [
+        str(r["node"])
+        for r in rows
+        if r.get("reachable") and not r.get("synchronized")
+    ]
+    if unsynced:
+        warnings.append(f"unsynchronized clock on: {', '.join(unsynced)}")
+
+    thr_str = _fmt_threshold_ms(warn_threshold_ms)
+    if (
+        inter_node_skew_ms is not None
+        and inter_node_skew_ms > warn_threshold_ms
+    ):
+        warnings.append(
+            f"inter-node clock skew "
+            f"{_fmt_offset_ms(inter_node_skew_ms, signed=False)} "
+            f"exceeds {thr_str}"
+        )
+    if (
+        max_host_offset_ms is not None
+        and max_host_offset_ms > warn_threshold_ms
+    ):
+        warnings.append(
+            f"host-to-VM clock skew "
+            f"{_fmt_offset_ms(max_host_offset_ms, signed=False)} "
+            f"exceeds {thr_str}"
+        )
+
+    return {
+        "nodes": rows,
+        "max_skew_ms": max_skew_ms,
+        "inter_node_skew_ms": inter_node_skew_ms,
+        "max_host_offset_ms": max_host_offset_ms,
+        "warn_threshold_ms": warn_threshold_ms,
+        "warnings": warnings,
+    }
+
+
+def cluster_clock_status(
+    cluster: ClusterInfo,
+    *,
+    warn_threshold_ms: float = SKEW_WARN_MS,
+) -> dict[str, Any]:
+    """Probe every cluster node's clock in parallel and summarize skew."""
+    nodes = cluster.get_nodes()
+    with ThreadPoolExecutor(max_workers=len(nodes) or 1) as pool:
+        rows = list(pool.map(probe_node_clock, nodes))
+    return summarize_clock_status(rows, warn_threshold_ms=warn_threshold_ms)
+
+
+def print_clock_status(clock: dict[str, Any] | None) -> None:
+    """Print the ``clock:`` section of ``ltvm cluster status``."""
+    if not clock:
+        return
+    rows = clock.get("nodes") or []
+    if not rows:
+        return
+    print()
+    print("clock:")
+    for row in rows:
+        node = str(row["node"])
+        if not row.get("reachable"):
+            print(f"  {node:<20} unreachable")
+            continue
+        state = str(row.get("chrony") or "unknown")
+        src = row.get("source")
+        src_col = f"({src})" if src else ""
+        off = row.get("offset_ms")
+        off_col = _fmt_offset_ms(float(off)) if off is not None else "-"
+        print(f"  {node:<20} {state:<12} {src_col:<16} {off_col}")
+
+    inter_skew = clock.get("inter_node_skew_ms")
+    host_skew = clock.get("max_host_offset_ms")
+    max_skew = clock.get("max_skew_ms")
+    threshold = float(clock.get("warn_threshold_ms", SKEW_WARN_MS))
+    parts: list[str] = []
+    if inter_skew is not None:
+        parts.append(
+            f"{_fmt_offset_ms(float(inter_skew), signed=False)} (inter-node)"
+        )
+    if host_skew is not None:
+        parts.append(
+            f"{_fmt_offset_ms(float(host_skew), signed=False)} (vs host)"
+        )
+    if parts:
+        suffix = (
+            f"  WARNING: exceeds {_fmt_threshold_ms(threshold)}"
+            if max_skew is not None and float(max_skew) > threshold
+            else ""
+        )
+        print(f"  max skew: {', '.join(parts)}{suffix}")
+
+    for w in clock.get("warnings") or []:
+        if parts and (
+            w.startswith("inter-node clock skew")
+            or w.startswith("host-to-VM clock skew")
+        ):
+            continue
+        print(f"  WARNING: {w}")
 
 
 def _main(argv: list[str] | None = None) -> int:

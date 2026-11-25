@@ -1043,7 +1043,9 @@ distro's stock `chrony` config.  Note that port 12300 is unprivileged,
 so any local user on a shared host can claim it first and serve guests
 arbitrary time (point guests at a host `chronyd`/`ntpd` via
 `LTVM_TIME_PORT=123` + `LTVM_TIME_SERVER=0` where local users are
-untrusted).
+untrusted).  `ltvm cluster status` probes every node's `chrony` lock state and reports
+inter-node and host-to-VM clock skew (warning when any node is
+unsynchronized or skewed >1 s).
 
 **Guest tick:** an x86_64 guest under KVM boots with `nohz=off`
 (`qemu_run.KVM_TICK_ARGS`).  Tickless idle reprograms the TSC deadline
