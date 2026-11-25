@@ -2003,10 +2003,10 @@ def hold_podman_usage() -> None:
     - On macOS, the podman machine auto-stop stops the machine only when
       it can take this lock exclusively, so no auto-stop can interrupt a
       concurrent ``podman build``, ``load``, or ``pull``.
-    - On both Linux and macOS, callers requiring exclusive access (via
-      :func:`podman_exclusive_lock`) take this lock non-blockingly so
-      maintenance operations never collide with an in-flight podman
-      command.
+    - On both Linux and macOS, ``ltvm clean --build-cache --apply`` takes
+      this lock exclusively (without waiting) before pruning
+      ``sharing=shared`` buildah cache mounts, so it never deletes a
+      shared cache mid-build.
 
     Waits while another process holds the lock exclusively (e.g. an
     auto-stop or a shared-cache prune).  Idempotent.
