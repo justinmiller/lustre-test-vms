@@ -15,7 +15,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN if [ -f /etc/apt/apt.conf.d/docker-clean ]; then \
         mv /etc/apt/apt.conf.d/docker-clean /etc/apt/docker-clean.ltvm-saved; \
     fi \
-    && printf 'APT::Keep-Downloaded-Packages "true";\nDir::Cache::pkgcache "";\nDir::Cache::srcpkgcache "";\n' \
+    && printf 'APT::Keep-Downloaded-Packages "true";\nDir::Cache::pkgcache "";\nDir::Cache::srcpkgcache "";\nAcquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
         > /etc/apt/apt.conf.d/99-ltvm-keep-packages
 
 # Copy shared package lists and the ubuntu-specific name map.

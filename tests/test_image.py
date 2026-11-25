@@ -1343,3 +1343,31 @@ class TestSkippedTestPackagesAreBuilt:
     def test_build_tools_parses(self) -> None:
         script = TARGETS_DIR / "common" / "build-tools.sh"
         subprocess.run(["bash", "-n", str(script)], check=True)
+
+
+class TestPackageManagerRetryConfig:
+    """Every apt Dockerfile configures retries and timeouts before installing
+    packages so transient CDN/mirror hiccups do not abort a build.
+
+    DNF already defaults to retries=10 and timeout=30 (dnf.conf(5)), so
+    Rocky/mainline Dockerfiles rely on its built-in defaults.
+    """
+
+    def test_apt_dockerfiles_configure_retries_and_timeouts(self) -> None:
+        apt_files = [
+            p
+            for p in sorted(TARGETS_DIR.glob("*/*.Dockerfile"))
+            if "apt-get" in p.read_text()
+        ]
+        assert apt_files
+        for path in apt_files:
+            text = path.read_text()
+            for setting in (
+                'Acquire::Retries "3";',
+                'Acquire::http::Timeout "30";',
+                'Acquire::https::Timeout "30";',
+            ):
+                assert setting in text, f"{path} missing {setting}"
+                assert text.index(setting) < text.index("apt-get"), (
+                    f"{path} sets {setting} after first apt-get"
+                )
