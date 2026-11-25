@@ -223,6 +223,10 @@ targets:
   # the version each resolved to is folded into the kernel staleness
   # hash so a moved alias rebuilds instead of reusing a stale vmlinux.
   mainline:
+    # --enable-crypto=yes is omitted: this defconfig kernel does not
+    # enable CONFIG_FS_ENCRYPTION.
+    configure_args:
+    - --enable-gss=yes
     container_image: quay.io/rockylinux/rockylinux:10.1
     default_mem: 4096
     kernel_upstream:

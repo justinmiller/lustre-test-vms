@@ -202,6 +202,7 @@ def test_debian_package_maps_include_krb5_server_and_sssd_kcm(
         ("ubuntu2604-server", True),
         ("ubuntu2404", False),
         ("ubuntu2604", False),
+        ("mainline", False),
     ],
 )
 def test_targets_configure_gss_and_crypto(
