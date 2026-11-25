@@ -43,13 +43,16 @@ from __future__ import annotations
 
 import configparser
 import contextlib
+import fnmatch
 import functools
 import hashlib
 import os
+import platform
 import re
+import shutil
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -279,18 +282,66 @@ def build_args() -> list[str]:
     return args
 
 
-@contextlib.contextmanager
-def podman_build_cwd() -> Iterator[Path]:
-    """Yield a scratch directory for ``podman build``'s working directory.
+def _containerignore_filter(
+    root: Path,
+) -> Callable[[str, list[str]], set[str]] | None:
+    """Return a ``shutil.copytree`` ignore callable for *root*/.containerignore."""
+    ignore_file = root / ".containerignore"
+    if not ignore_file.is_file():
+        return None
+    patterns: list[str] = []
+    for raw in ignore_file.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        patterns.append(line.rstrip("/"))
+    if not patterns:
+        return None
 
-    On macOS, ``podman-remote build --secret id=...,src=...`` stages the
-    secret into a ``podman-build-secret-*`` temp file in its own CWD and
-    leaves it behind after the build.  Running ``podman build`` inside a
-    short-lived temp directory keeps the user's working tree clean while
-    preserving all path arguments (which are absolute).
+    def _ignore(_directory: str, names: list[str]) -> set[str]:
+        return {
+            name
+            for name in names
+            if any(fnmatch.fnmatchcase(name, pat) for pat in patterns)
+        }
+
+    return _ignore
+
+
+@contextlib.contextmanager
+def podman_build_context(
+    context_dir: Path,
+) -> Iterator[tuple[Path | None, Path]]:
+    """Yield ``(cwd, context_dir)`` for a ``podman build`` call.
+
+    On macOS, ``podman-remote build --secret id=...,src=...`` stages each
+    secret into a ``podman-build-secret-*`` temp file in
+    ``filepath.Dir(filepath.EvalSymlinks(context_dir))`` (and older
+    releases used CWD) and leaves it behind after the build.  When
+    passing a CA secret on macOS, stage *context_dir* into a short-lived
+    temp directory (honoring ``.containerignore`` so multi-GB ``*.ext4``
+    images in cross-build output directories are skipped) and run
+    ``podman build`` with that temp directory as ``cwd`` so every
+    ``podman-build-secret-*`` file lands inside the temp directory and
+    disappears on exit.
+
+    Off macOS, or when no CA secret is configured, yields ``(None,
+    context_dir.resolve())`` without copying anything.
     """
+    resolved = context_dir.resolve()
+    if platform.system() != "Darwin" or ca_path() is None:
+        yield None, resolved
+        return
     with tempfile.TemporaryDirectory(prefix="ltvm-podman-build-") as d:
-        yield Path(d)
+        tmp = Path(d)
+        staged = tmp / "context"
+        shutil.copytree(
+            resolved,
+            staged,
+            symlinks=True,
+            ignore=_containerignore_filter(resolved),
+        )
+        yield tmp, staged
 
 
 def label_args() -> list[str]:

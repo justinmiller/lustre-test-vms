@@ -237,7 +237,7 @@ class TestConfigAndArgs:
         assert mirrors.configured() == {}
         assert "bogus" in capsys.readouterr().err
 
-    def test_build_args_and_labels_and_cwd(self, site, ca_file) -> None:
+    def test_build_args_and_labels(self, site, ca_file) -> None:
         site(f"rocky = https://m.example/rocky\nca = {ca_file}\n")
         args = mirrors.build_args()
         assert "--build-arg" in args
@@ -254,10 +254,47 @@ class TestConfigAndArgs:
             "--label",
             f"{mirrors.LABEL}=rocky,ca",
         ]
-        with mirrors.podman_build_cwd() as d:
-            assert d.is_dir()
-            (d / "podman-build-secret-1").write_text("leak")
-        assert not d.exists()
+
+    def test_podman_build_context_stages_on_macos_with_ca(
+        self, site, ca_file, tmp_path, monkeypatch
+    ) -> None:
+        site(f"ca = {ca_file}\n")
+        ctx = tmp_path / "targets"
+        (ctx / "common").mkdir(parents=True)
+        (ctx / "common" / "ltvm-mirrors.sh").write_text("#!/bin/bash\n")
+        (ctx / "base.ext4").write_text("huge")
+        (ctx / "_inject").mkdir()
+        (ctx / "_inject" / "vmlinuz").write_text("k")
+        (ctx / ".containerignore").write_text("*.ext4\n_inject/\n")
+
+        monkeypatch.setattr(mirrors.platform, "system", lambda: "Darwin")
+        with mirrors.podman_build_context(ctx) as (build_cwd, build_ctx):
+            assert build_cwd is not None and build_cwd.is_dir()
+            assert build_ctx.parent == build_cwd
+            assert (build_ctx / "common" / "ltvm-mirrors.sh").is_file()
+            assert not (build_ctx / "base.ext4").exists()
+            assert not (build_ctx / "_inject").exists()
+            # Simulate podman-remote writing secret beside resolved context_dir
+            (build_ctx.parent / "podman-build-secret-1").write_text("leak")
+        assert not build_cwd.exists()
+        assert list(tmp_path.glob("podman-build-secret-*")) == []
+
+    def test_podman_build_context_passthrough_off_macos_or_without_ca(
+        self, site, ca_file, tmp_path, monkeypatch
+    ) -> None:
+        ctx = tmp_path / "targets"
+        ctx.mkdir()
+        # No CA on macOS -> passthrough
+        monkeypatch.setattr(mirrors.platform, "system", lambda: "Darwin")
+        with mirrors.podman_build_context(ctx) as (build_cwd, build_ctx):
+            assert build_cwd is None
+            assert build_ctx == ctx.resolve()
+        # With CA on Linux -> passthrough
+        site(f"ca = {ca_file}\n")
+        monkeypatch.setattr(mirrors.platform, "system", lambda: "Linux")
+        with mirrors.podman_build_context(ctx) as (build_cwd, build_ctx):
+            assert build_cwd is None
+            assert build_ctx == ctx.resolve()
 
 
 # ---------------------------------------------------------------------------

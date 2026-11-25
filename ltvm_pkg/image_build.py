@@ -231,12 +231,15 @@ def _prebuild_tools_native(
                 "--build-arg",
                 f"KERNEL_DEB_SOURCE={target_config.kernel_deb_source}",
             ]
-        with mirrors.podman_build_cwd() as build_cwd:
+        with mirrors.podman_build_context(TARGETS_DIR) as (
+            build_cwd,
+            build_ctx,
+        ):
             cmd += mirrors.build_args() + mirrors.label_args()
             cmd += [
                 "-f",
                 str(build_dockerfile.resolve()),
-                str(TARGETS_DIR.resolve()),
+                str(build_ctx),
             ]
             subprocess.run(cmd, check=True, cwd=build_cwd)
 
@@ -855,7 +858,10 @@ def _build_base_layers(
 
     log.info("Building container image %s ...", tag)
     superseded.note(tag)
-    with mirrors.podman_build_cwd() as build_cwd:
+    with mirrors.podman_build_context(build_context) as (
+        build_cwd,
+        build_ctx,
+    ):
         _run(
             [
                 "podman",
@@ -868,7 +874,7 @@ def _build_base_layers(
                 tag,
                 "-f",
                 str(effective_dockerfile.resolve()),
-                str(build_context.resolve()),
+                str(build_ctx),
             ],
             capture_output=False,
             cwd=build_cwd,

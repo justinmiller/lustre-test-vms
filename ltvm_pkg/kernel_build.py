@@ -914,13 +914,16 @@ def _ensure_container_image(
         ]
     superseded = Superseded()
     superseded.note(base_tag)
-    with mirrors.podman_build_cwd() as build_cwd:
+    with mirrors.podman_build_context(TARGETS_DIR) as (
+        build_cwd,
+        build_ctx,
+    ):
         # A variant container is built FROM this one and inherits both.
         cmd += mirrors.build_args() + mirrors.label_args()
         cmd += [
             "-f",
             str(base_dockerfile.resolve()),
-            str(TARGETS_DIR.resolve()),
+            str(build_ctx),
         ]
         subprocess.run(cmd, check=True, cwd=build_cwd)
 
