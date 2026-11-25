@@ -1371,3 +1371,24 @@ class TestPackageManagerRetryConfig:
                 assert text.index(setting) < text.index("apt-get"), (
                     f"{path} sets {setting} after first apt-get"
                 )
+
+    def test_apt_dockerfiles_restore_stock_apt_config(self) -> None:
+        apt_files = [
+            p
+            for p in sorted(TARGETS_DIR.glob("*/*.Dockerfile"))
+            if "apt-get" in p.read_text()
+        ]
+        assert apt_files
+        remove_dropin = "rm -f /etc/apt/apt.conf.d/99-ltvm-keep-packages"
+        restore_clean = (
+            "mv /etc/apt/docker-clean.ltvm-saved"
+            " /etc/apt/apt.conf.d/docker-clean"
+        )
+        for path in apt_files:
+            text = path.read_text()
+            last_install = text.rindex("apt-get install")
+            for step in (remove_dropin, restore_clean):
+                assert step in text, f"{path} missing restore step: {step}"
+                assert text.rindex(step) > last_install, (
+                    f"{path} runs {step} before final apt-get install"
+                )
